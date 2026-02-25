@@ -13,6 +13,18 @@ export type FormulaData = {
   params: FormulaParam[];
 };
 
+export type FormulaPolicy = {
+  pOp: number;
+  pFrac: number;
+  pPow: number;
+  pFunc: number;
+  opsW: number[];
+  funcsW: number[];
+  constMin: number;
+  constMax: number;
+  shuffleP: number;
+};
+
 type Node =
   | { type: "var"; name: string }
   | { type: "const"; value: string }
@@ -24,8 +36,26 @@ type Node =
 const funcs = ["\\log", "\\exp", "\\sin", "\\cos", "\\tanh"];
 const ops = ["+", "-", "\\cdot"];
 
-export function buildFormulaData(seed: number, phaseTerms: string[]): FormulaData {
+export function buildFormulaData(seed: number, phaseTerms: string[], policy?: Partial<FormulaPolicy>): FormulaData {
   const rng = makeRng(seed ^ 0x9e3779b1);
+  const p: FormulaPolicy = {
+    pOp: clamp01(policy?.pOp ?? 0.4),
+    pFrac: clamp01(policy?.pFrac ?? 0.2),
+    pPow: clamp01(policy?.pPow ?? 0.2),
+    pFunc: clamp01(policy?.pFunc ?? 0.2),
+    opsW: normalizeWeights(policy?.opsW, ops.length) ?? [1, 1, 1],
+    funcsW: normalizeWeights(policy?.funcsW, funcs.length) ?? [1, 1, 1, 1, 1],
+    constMin: clampInt(policy?.constMin ?? 2, 0, 12),
+    constMax: clampInt(policy?.constMax ?? 5, 0, 16),
+    shuffleP: clamp01(policy?.shuffleP ?? 0.35),
+  };
+  const pSum = p.pOp + p.pFrac + p.pPow + p.pFunc || 1;
+  const pOp = p.pOp / pSum;
+  const pFrac = p.pFrac / pSum;
+  const pPow = p.pPow / pSum;
+  const pFunc = p.pFunc / pSum;
+  void pFunc;
+
   const phases = phaseTerms.length > 0 ? phaseTerms : ["归一"];
   const phaseVars = phases.map((_, idx) => ({
     key: `Φ${idx + 1}`,
@@ -54,7 +84,9 @@ export function buildFormulaData(seed: number, phaseTerms: string[]): FormulaDat
     .filter((item) => item.key !== "Ω" && item.key !== "σ")
     .map<Node>((item) => ({ type: "var", name: item.latex }));
 
-  const constCount = 2 + Math.floor(rng() * 4);
+  const constMin = Math.min(p.constMin, p.constMax);
+  const constMax = Math.max(p.constMin, p.constMax);
+  const constCount = constMin + Math.floor(rng() * (constMax - constMin + 1));
   for (let i = 0; i < constCount; i += 1) {
     varNodes.push({ type: "const", value: formatDecimal(rng, 0.3, 6.8) });
   }
@@ -67,17 +99,22 @@ export function buildFormulaData(seed: number, phaseTerms: string[]): FormulaDat
     const left = nodes.pop() as Node;
     const choice = rng();
     let node: Node;
-    if (choice < 0.4) {
-      node = { type: "op", op: pick(ops, rng), left, right };
-    } else if (choice < 0.6) {
+    if (choice < pOp) {
+      node = { type: "op", op: pickWeighted(ops, p.opsW, rng), left, right };
+    } else if (choice < pOp + pFrac) {
       node = { type: "frac", num: left, den: right };
-    } else if (choice < 0.8) {
+    } else if (choice < pOp + pFrac + pPow) {
       node = { type: "pow", base: left, exp: right };
     } else {
-      node = { type: "op", op: pick(ops, rng), left: { type: "func", name: pick(funcs, rng), arg: left }, right };
+      node = {
+        type: "op",
+        op: pickWeighted(ops, p.opsW, rng),
+        left: { type: "func", name: pickWeighted(funcs, p.funcsW, rng), arg: left },
+        right,
+      };
     }
     nodes.push(node);
-    if (rng() < 0.35 && nodes.length > 1) {
+    if (rng() < p.shuffleP && nodes.length > 1) {
       shuffle(nodes, rng);
     }
   }
@@ -106,51 +143,81 @@ function computeOmega(core: Node, params: FormulaParam[]) {
     const v = parseLatexValue(p.value);
     varMap.set(p.latex, v);
   }
-  const value = evalNode(core, varMap);
+  let value = evalNode(core, varMap, { eps: 1e-6, clamp: 1e6, expMax: 7.5, powExpMax: 6.5, logMin: 1e-6 });
+  if (!Number.isFinite(value) || Number.isNaN(value)) {
+    value = evalNode(core, varMap, { eps: 1e-4, clamp: 5e4, expMax: 6, powExpMax: 5, logMin: 1e-4 });
+  }
   return formatComputedLatex(value);
 }
 
-function evalNode(node: Node, varMap: Map<string, number>): number {
+function evalNode(
+  node: Node,
+  varMap: Map<string, number>,
+  guard: { eps: number; clamp: number; expMax: number; powExpMax: number; logMin: number },
+): number {
   switch (node.type) {
     case "var":
-      return varMap.get(node.name) ?? NaN;
+      return clampFinite(varMap.get(node.name) ?? NaN, guard.clamp);
     case "const":
-      return parseFloat(node.value);
+      return clampFinite(parseFloat(node.value), guard.clamp);
     case "op": {
-      const left = evalNode(node.left, varMap);
-      const right = evalNode(node.right, varMap);
-      if (node.op === "+") return left + right;
-      if (node.op === "-") return left - right;
-      return left * right;
+      const left = evalNode(node.left, varMap, guard);
+      const right = evalNode(node.right, varMap, guard);
+      if (node.op === "+") return clampFinite(left + right, guard.clamp);
+      if (node.op === "-") return clampFinite(left - right, guard.clamp);
+      return clampFinite(left * right, guard.clamp);
     }
     case "frac": {
-      const num = evalNode(node.num, varMap);
-      const den = evalNode(node.den, varMap);
-      return num / den;
+      const num = evalNode(node.num, varMap, guard);
+      let den = evalNode(node.den, varMap, guard);
+      if (!Number.isFinite(den) || Number.isNaN(den)) den = guard.eps;
+      if (Math.abs(den) < guard.eps) den = den >= 0 ? guard.eps : -guard.eps;
+      return clampFinite(num / den, guard.clamp);
     }
     case "pow": {
-      const base = evalNode(node.base, varMap);
-      const exp = evalNode(node.exp, varMap);
-      return Math.pow(base, exp);
+      const base = evalNode(node.base, varMap, guard);
+      const exp = evalNode(node.exp, varMap, guard);
+      return clampFinite(safePow(base, exp, guard), guard.clamp);
     }
     case "func": {
-      const arg = evalNode(node.arg, varMap);
-      if (node.name === "\\log") return Math.log(arg);
-      if (node.name === "\\exp") return Math.exp(arg);
-      if (node.name === "\\sin") return Math.sin(arg);
-      if (node.name === "\\cos") return Math.cos(arg);
-      return Math.tanh(arg);
+      const arg = evalNode(node.arg, varMap, guard);
+      if (node.name === "\\log") return clampFinite(Math.log(Math.max(guard.logMin, Math.abs(arg))), guard.clamp);
+      if (node.name === "\\exp") return clampFinite(Math.exp(clampRange(arg, -guard.expMax, guard.expMax)), guard.clamp);
+      if (node.name === "\\sin") return clampFinite(Math.sin(clampRange(arg, -1e4, 1e4)), guard.clamp);
+      if (node.name === "\\cos") return clampFinite(Math.cos(clampRange(arg, -1e4, 1e4)), guard.clamp);
+      return clampFinite(Math.tanh(clampRange(arg, -8, 8)), guard.clamp);
     }
     default:
       return NaN;
   }
 }
 
+function clampRange(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n));
+}
+
+function clampFinite(n: number, clamp: number) {
+  if (!Number.isFinite(n) || Number.isNaN(n)) return NaN;
+  if (n > clamp) return clamp;
+  if (n < -clamp) return -clamp;
+  return n;
+}
+
+function safePow(base: number, exp: number, guard: { eps: number; clamp: number; powExpMax: number; logMin: number }) {
+  const e = clampRange(exp, -guard.powExpMax, guard.powExpMax);
+  const b = clampRange(base, -guard.clamp, guard.clamp);
+  if (Math.abs(b) < guard.eps) return 0;
+  if (b < 0 && Math.abs(e - Math.round(e)) > 1e-6) return NaN;
+  const abs = Math.abs(b);
+  const out = Math.exp(e * Math.log(Math.max(guard.logMin, abs)));
+  return b < 0 && Math.round(e) % 2 === 1 ? -out : out;
+}
+
 function parseLatexValue(value: string): number {
   const trimmed = value.trim();
   if (trimmed === "\\pi") return Math.PI;
   if (trimmed === "e") return Math.E;
-  if (trimmed === "\\infty") return Number.POSITIVE_INFINITY;
+  if (trimmed === "\\infty") return 10000;
   if (trimmed === "\\lim_{x \\to 0} \\frac{\\sin x}{x}") return 1;
 
   const frac = trimmed.match(/^\\frac\{(\d+)\}\{(\d+)\}$/);
@@ -223,6 +290,7 @@ function render(node: Node, limit?: number, depth = 1): string {
 function wrap(node: Node, content: string) {
   if (node.type === "op") return `\\left(${content}\\right)`;
   if (node.type === "frac") return `\\left(${content}\\right)`;
+  if (node.type === "pow") return `\\left(${content}\\right)`;
   return content;
 }
 
@@ -259,6 +327,35 @@ function randRange(rng: () => number, min: number, max: number) {
   return min + (max - min) * rng();
 }
 
+function clamp01(n: number) {
+  if (n < 0) return 0;
+  if (n > 1) return 1;
+  return n;
+}
+
+function clampInt(n: number, min: number, max: number) {
+  if (!Number.isFinite(n)) return min;
+  return Math.max(min, Math.min(max, Math.trunc(n)));
+}
+
+function normalizeWeights(weights: number[] | undefined, expectedLen: number) {
+  if (!weights || weights.length !== expectedLen) return null;
+  const s = weights.reduce((a, b) => a + (Number.isFinite(b) ? Math.max(0, b) : 0), 0);
+  if (s <= 0) return null;
+  return weights.map((w) => (Number.isFinite(w) ? Math.max(0, w) / s : 0));
+}
+
+function pickWeighted<T>(items: T[], weights: number[], rng: () => number) {
+  const w = normalizeWeights(weights, items.length);
+  if (!w) return pick(items, rng);
+  let x = rng();
+  for (let i = 0; i < items.length; i += 1) {
+    x -= w[i] ?? 0;
+    if (x <= 0) return items[i] as T;
+  }
+  return items[items.length - 1] as T;
+}
+
 function pick<T>(list: T[], rng: () => number) {
   return list[Math.floor(rng() * list.length)] as T;
 }
@@ -284,7 +381,7 @@ function formatValue(rng: () => number) {
   if (choice < 0.82) return `\\lim_{x \\to 0} \\frac{\\sin x}{x}`;
   if (choice < 0.88) return `\\pi`;
   if (choice < 0.94) return `e`;
-  return `\\infty`;
+  return formatDecimal(rng, 120, 12000, 2);
 }
 
 function formatDecimal(rng: () => number, min: number, max: number, digits?: number) {

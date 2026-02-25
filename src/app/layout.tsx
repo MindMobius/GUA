@@ -18,8 +18,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "GUA · 赛博算卦",
-  description: "输入极简，过程极繁，输出极决。",
+  title: "GUA · 个人宇宙常量推演",
+  description: "推演你的宇宙常量：输入极简，过程极繁，输出极决。",
 };
 
 export default function RootLayout({
@@ -28,7 +28,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="zh-CN">
+    <html lang="zh-CN" suppressHydrationWarning>
       <head>
         <ColorSchemeScript defaultColorScheme="light" />
       </head>

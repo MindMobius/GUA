@@ -484,8 +484,13 @@ body {
 
 .gua-formula-modal {
   max-height: 80vh;
-  overflow: hidden;
+  overflow: auto;
   padding: 12px;
+}
+
+.gua-formula-modal-inner {
+  min-width: max-content;
+  min-height: max-content;
 }
 
 .gua-stream-body .markstream-react {

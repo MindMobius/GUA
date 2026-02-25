@@ -28,7 +28,6 @@ export function StreamingPanels({
   const formulaRef = useRef<HTMLDivElement | null>(null);
   const scienceRef = useRef<HTMLDivElement | null>(null);
   const lunarRef = useRef<HTMLDivElement | null>(null);
-  const formulaModalRef = useRef<HTMLDivElement | null>(null);
 
   const scienceProgrammatic = useRef(false);
   const lunarProgrammatic = useRef(false);
@@ -65,34 +64,6 @@ export function StreamingPanels({
       if (raf) cancelAnimationFrame(raf);
     };
   }, []);
-
-  useEffect(() => {
-    if (formulaOpen) {
-      const node = formulaModalRef.current;
-      if (!node) return;
-      const ro = new ResizeObserver(() => scaleFormula(node));
-      ro.observe(node);
-      let raf = 0;
-      let scheduled = false;
-      const schedule = () => {
-        if (scheduled) return;
-        scheduled = true;
-        raf = requestAnimationFrame(() => {
-          scheduled = false;
-          scaleFormula(node);
-        });
-      };
-      const mo = new MutationObserver(() => schedule());
-      mo.observe(node, { childList: true, subtree: true, characterData: true });
-      schedule();
-      return () => {
-        mo.disconnect();
-        ro.disconnect();
-        if (raf) cancelAnimationFrame(raf);
-      };
-    }
-    return undefined;
-  }, [formulaOpen, formulaMarkdown]);
 
   return (
     <Stack gap="lg">
@@ -185,8 +156,10 @@ export function StreamingPanels({
       ) : null}
 
       <Modal opened={formulaOpen} onClose={() => setFormulaOpen(false)} size="calc(100vw - 96px)" centered>
-        <div ref={formulaModalRef} className="gua-formula-modal gua-formula-fit">
-          <MarkdownStream content={formulaMarkdown} className="gua-stream-body-inner gua-stream-formula" />
+        <div className="gua-formula-modal">
+          <div className="gua-formula-modal-inner">
+            <MarkdownStream content={formulaMarkdown} className="gua-stream-body-inner gua-stream-formula" />
+          </div>
         </div>
       </Modal>
 

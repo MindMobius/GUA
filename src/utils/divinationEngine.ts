@@ -14,17 +14,11 @@ export type DivinationConfig = {
     numerology: number;
     entropy: number;
   };
-  verdictThresholds: {
-    greatGood: number;
-    good: number;
-    flat: number;
-  };
 };
 
 export type DivinationResult = {
-  verdict: string;
   score: number;
-  poem: string;
+  signature?: string;
   carry: {
     seed: number;
     pillars: {
@@ -44,13 +38,15 @@ export type DivinationResult = {
 };
 
 export type DivinationTracePhase =
+  | "观测"
+  | "模型"
   | "时间"
   | "文字"
   | "易经"
   | "数理"
   | "天机"
   | "融合"
-  | "裁决";
+  | "归一";
 
 export type DivinationTraceKind = "group_start" | "group_end" | "event";
 
@@ -69,6 +65,19 @@ export type DivinationTraceEvent = {
   hash: string;
 };
 
+export type DivinationExtras = {
+  obs?: {
+    hash: number;
+    fp8?: number[];
+    enhanced?: number;
+  };
+  model?: {
+    salt: number;
+    runCount: number;
+    theta16?: number[];
+  };
+};
+
 export const defaultDivinationConfig: DivinationConfig = {
   weights: {
     time: 0.28,
@@ -76,11 +85,6 @@ export const defaultDivinationConfig: DivinationConfig = {
     iching: 0.24,
     numerology: 0.16,
     entropy: 0.1,
-  },
-  verdictThresholds: {
-    greatGood: 0.78,
-    good: 0.62,
-    flat: 0.46,
   },
 };
 
@@ -212,11 +216,13 @@ export function divineWithTrace(
   input: DivinationInput,
   entropy: number,
   config: DivinationConfig = defaultDivinationConfig,
+  extras?: DivinationExtras,
 ): { result: DivinationResult; trace: DivinationTraceEvent[] } {
   const normalizedQuestion = normalizeQuestion(input.question);
   const questionHash = fnv1a32(normalizedQuestion);
   const timeSeed = timeSignature(input.datetime);
-  const seed = mixSeed(questionHash, timeSeed, entropy);
+  const baseSeed = mixSeed(questionHash, timeSeed, entropy);
+  const seed = mixSeed(baseSeed, extras?.model?.salt ?? 0, extras?.obs?.hash ?? 0);
   const rng = makeRng(seed);
 
   const trace: DivinationTraceEvent[] = [];
@@ -317,6 +323,21 @@ export function divineWithTrace(
   ) => push("group_end", phase, title, data, fp);
   const emit = (phase: DivinationTracePhase, message: string, data?: Record<string, string | number>, fp?: number[]) =>
     push("event", phase, message, data, fp);
+
+  const theta16 = extras?.model?.theta16 ?? [];
+  const thetaAt = (i: number) => {
+    const v = theta16[i];
+    if (!Number.isFinite(v)) return 0.5;
+    return clamp01(v);
+  };
+
+  if (extras?.obs || extras?.model) {
+    groupStart("观测", "观测封装", { oh: hex8(extras?.obs?.hash ?? 0), x: extras?.obs?.enhanced ?? 0 }, extras?.obs?.fp8);
+    if (extras?.model) {
+      emit("模型", "本机宇宙常量", { m: hex8(extras.model.salt), n: extras.model.runCount }, fp8(theta16.slice(0, 8)));
+    }
+    groupEnd("观测", "封装完毕", { h: prevHash }, extras?.obs?.fp8);
+  }
 
   groupStart("天机", "启封", { seed: hex8(seed), qh: hex8(questionHash), ts: hex8(timeSeed), e: hex8(entropy >>> 0) });
   emit("天机", "启封问事，落符入盘", { q: normalizedQuestion.length, qh: hex8(questionHash) });
@@ -430,11 +451,21 @@ export function divineWithTrace(
   }, fp8([env.radiation, env.solar, env.lunar, env.tide, env.lat, env.lon, env.tz, env.mag]));
   groupEnd("天机", "环境场封装", { h: prevHash });
 
+  const obs8 = Array.from({ length: 8 }, (_, i) => clamp01(Number(extras?.obs?.fp8?.[i] ?? 0.5)));
+  const obs16 = [
+    ...obs8,
+    ...Array.from({ length: 8 }, (_, i) => {
+      const nib = (((extras?.obs?.hash ?? seed) >>> (i * 4)) & 0xf) / 15;
+      return clamp01(nib * 0.62 + (obs8[i] ?? 0.5) * 0.38);
+    }),
+  ];
+
   const factors = computeMultidisciplinaryFactors({
     seed,
     questionHash,
     timeSeed,
     entropy,
+    obs16,
     timeScore,
     textScore,
     ichingScore,
@@ -449,7 +480,36 @@ export function divineWithTrace(
   });
 
   const factorScore = clamp01(factors.score01);
-  const factorGate = clamp01(0.25 + env.radiation * 0.28 + entropyScore * 0.22 + rngTrace() * 0.14);
+  const factorGate = clamp01(
+    0.23 +
+      env.radiation * 0.28 +
+      entropyScore * 0.2 +
+      rngTrace() * 0.12 +
+      (thetaAt(2) - 0.5) * 0.22 +
+      ((extras?.obs?.fp8?.[0] ?? 0.5) - 0.5) * 0.1,
+  );
+
+  const w0 = config.weights;
+  const dwTime = (thetaAt(4) - 0.5) * 0.08;
+  const dwText = (thetaAt(5) - 0.5) * 0.08;
+  const dwI = (thetaAt(6) - 0.5) * 0.08;
+  const dwN = (thetaAt(7) - 0.5) * 0.08;
+  const dwE = (thetaAt(8) - 0.5) * 0.08;
+  const w1 = {
+    time: clamp01(w0.time + dwTime),
+    text: clamp01(w0.text + dwText),
+    iching: clamp01(w0.iching + dwI),
+    numerology: clamp01(w0.numerology + dwN),
+    entropy: clamp01(w0.entropy + dwE),
+  };
+  const sumW = w1.time + w1.text + w1.iching + w1.numerology + w1.entropy || 1;
+  const effWeights = {
+    time: w1.time / sumW,
+    text: w1.text / sumW,
+    iching: w1.iching / sumW,
+    numerology: w1.numerology / sumW,
+    entropy: w1.entropy / sumW,
+  };
 
   const combinedBase = combineScores(
     {
@@ -459,16 +519,16 @@ export function divineWithTrace(
       numerology: numerologyScore,
       entropy: entropyScore,
     },
-    config.weights,
+    effWeights,
   );
   const combined = clamp01(combinedBase * (1 - factorGate) + factorScore * factorGate);
   groupStart("融合", "融合维度", { mode: "nonlinear" });
   emit("融合", "权重归一", {
-    wTime: round4(config.weights.time),
-    wText: round4(config.weights.text),
-    wI: round4(config.weights.iching),
-    wN: round4(config.weights.numerology),
-    wE: round4(config.weights.entropy),
+    wTime: round4(effWeights.time),
+    wText: round4(effWeights.text),
+    wI: round4(effWeights.iching),
+    wN: round4(effWeights.numerology),
+    wE: round4(effWeights.entropy),
   });
   emit("融合", "多学科因子注入", {
     factor: round4(factorScore),
@@ -476,11 +536,11 @@ export function divineWithTrace(
     base: round4(combinedBase),
   }, factors.fp8);
   const parts = {
-    time: timeScore * config.weights.time,
-    text: textScore * config.weights.text,
-    iching: ichingScore * config.weights.iching,
-    numerology: numerologyScore * config.weights.numerology,
-    entropy: entropyScore * config.weights.entropy,
+    time: timeScore * effWeights.time,
+    text: textScore * effWeights.text,
+    iching: ichingScore * effWeights.iching,
+    numerology: numerologyScore * effWeights.numerology,
+    entropy: entropyScore * effWeights.entropy,
   };
   emit("融合", "分量叠加", {
     pT: round4(parts.time),
@@ -489,7 +549,14 @@ export function divineWithTrace(
     pN: round4(parts.numerology),
     pE: round4(parts.entropy),
   });
-  const iters = 18 + Math.floor(rngTrace() * 9);
+  const iters = clampInt(
+    18 +
+      Math.floor(rngTrace() * 9) +
+      Math.round((thetaAt(3) - 0.5) * 8) +
+      Math.round((extras?.model?.runCount ?? 0) / 42),
+    12,
+    34,
+  );
   groupStart("融合", "非线性映射迭代", { n: iters });
   for (let i = 0; i < iters; i += 1) {
     const s = rngTrace();
@@ -503,35 +570,20 @@ export function divineWithTrace(
   groupEnd("融合", "融合完毕", { score01: round4(combined), tail: prevHash });
 
   const score = clampInt(Math.round(remapTo100(combined, rng())), 0, 100);
-  const verdict = pickVerdict(score, config.verdictThresholds, hexagram.changingLine);
-  const poem = pickPoem({
-    verdict,
-    seed,
-    dominantElement: dominantElementOf(elements),
-    hexagramName: hexagram.name,
-    salt: factors.signature,
-  });
-
-  groupStart("裁决", "裁决封存", { score });
-  emit("裁决", "裁决成句", { score, verdict });
-  emit("裁决", "封存签文", { poem, seal: hex8(mixSeed(seed, score, questionHash)) });
-  emit("裁决", "签名链校验", { head: trace[0]?.hash ?? "", tail: prevHash, ok: 1 });
-  groupEnd("裁决", "封存完毕", { tail: prevHash });
+  groupStart("归一", "归一封存", { score });
+  emit("归一", "归一输出", { score, head: trace[0]?.hash ?? "", tail: prevHash, sig: factors.signature });
+  groupEnd("归一", "封存完毕", { tail: prevHash });
 
   const rootDigest = hex8(rootAcc);
-  for (let i = trace.length - 1; i >= 0; i -= 1) {
-    if (trace[i].phase === "裁决" && trace[i].message === "签名链校验") {
-      trace[i].rootDigest = rootDigest;
-      trace[i].data = { ...(trace[i].data ?? {}), root: rootDigest };
-      break;
-    }
-  }
   if (trace[0]) trace[0].rootDigest = rootDigest;
+  if (trace[trace.length - 1]) {
+    trace[trace.length - 1].rootDigest = rootDigest;
+    trace[trace.length - 1].data = { ...(trace[trace.length - 1].data ?? {}), root: rootDigest };
+  }
 
   const result: DivinationResult = {
-    verdict,
     score,
-    poem,
+    signature: factors.signature,
     carry: {
       seed,
       pillars,
@@ -710,6 +762,7 @@ function computeMultidisciplinaryFactors(ctx: {
   questionHash: number;
   timeSeed: number;
   entropy: number;
+  obs16: number[];
   timeScore: number;
   textScore: number;
   ichingScore: number;
@@ -744,18 +797,25 @@ function computeMultidisciplinaryFactors(ctx: {
     ctx.env.tide,
   ].map((x) => clamp01(x));
 
-  let vec = v0.slice(0, 16);
-  let sumScalar = 0;
+  const obs = Array.from({ length: 16 }, (_, i) => clamp01(Number(ctx.obs16[i] ?? 0.5)));
+  const base = v0.slice(0, 16).map((x, i) => clamp01(x * 0.72 + (obs[i] ?? 0.5) * 0.28));
+
+  let vec = base.slice(0, 16);
+  const factorScalars: number[] = [];
+  const factorOk: number[] = [];
   let sigAcc = fnv1a32(hex8(ctx.seed));
 
   const factor = (phase: DivinationTracePhase, title: string, tag: number, run: (r: () => number) => { scalar: number; vec: number[]; fp: number[]; sig: string }) => {
     const r = mk(tag);
     ctx.groupStart(phase, title, { tag: hex8(tag) }, undefined);
     const out = run(r);
-    ctx.emit(phase, "因子输出", { s: round4(out.scalar), sig: out.sig }, out.fp);
-    ctx.groupEnd(phase, "因子封箱", { s: round4(out.scalar), sig: out.sig }, out.fp);
+    const ok = Number.isFinite(out.scalar);
+    const s = ok ? clamp01(out.scalar) : 0;
+    factorScalars.push(s);
+    factorOk.push(ok ? 1 : 0);
+    ctx.emit(phase, "因子输出", { s: round4(s), sig: out.sig }, out.fp);
+    ctx.groupEnd(phase, "因子封箱", { s: round4(s), sig: out.sig }, out.fp);
     vec = vecMix(vec, out.vec, 0.35 + ctx.env.radiation * 0.25 + r() * 0.1);
-    sumScalar += out.scalar;
     sigAcc = fnv1a32(`${hex8(sigAcc)}|${out.sig}`);
   };
 
@@ -764,7 +824,7 @@ function computeMultidisciplinaryFactors(ctx: {
     const tide = ctx.env.tide + (r() - 0.5) * 0.06;
     const resonance = clamp01(0.5 + Math.sin(phase * 2.1) * 0.35 + (r() - 0.5) * 0.12);
     const scalar = clamp01(0.35 * resonance + 0.35 * tide + 0.3 * ctx.env.radiation);
-    const vecOut = vecClamp01(vecAdd(vecScale(vec, 0.85), vecScale(v0, 0.15)).map((x, i) => clamp01(x + (Math.sin(phase + i * 0.6) * 0.08))));
+    const vecOut = vecClamp01(vecAdd(vecScale(vec, 0.85), vecScale(base, 0.15)).map((x, i) => clamp01(x + (Math.sin(phase + i * 0.6) * 0.08))));
     const fp = fp8([scalar, resonance, tide, ctx.env.radiation, ctx.env.solar, ctx.env.lunar, ctx.env.lat, ctx.env.lon]);
     const sig = hex8(fnv1a32(`astro|${hex8(ctx.seed)}|${round4(phase)}|${round4(resonance)}`));
     ctx.emit("时间", "潮汐势估计", { tide: round4(tide), res: round4(resonance) }, fp);
@@ -923,11 +983,226 @@ function computeMultidisciplinaryFactors(ctx: {
     return { scalar, vec: vecOut, fp, sig };
   });
 
-  const score01 = clamp01(sumScalar / 9 * 0.58 + vecEntropy01(vec) * 0.42);
+  factor("融合", "图论/PageRank/稳态分布", 0x0a9e0001, (r) => {
+    const n = 8;
+    const damp = 0.78 + r() * 0.12;
+    const adj = Array.from({ length: n }, (_, i) =>
+      Array.from({ length: n }, (_, j) => (i === j ? 0 : clamp01(0.15 + (vec[(i * 2 + j) % vec.length] ?? 0.5) * 0.75 + (r() - 0.5) * 0.06))),
+    );
+    const outSum = adj.map((row) => row.reduce((a, b) => a + b, 0) || 1);
+    let pr = Array.from({ length: n }, () => 1 / n);
+    for (let it = 0; it < 28; it += 1) {
+      const next = Array.from({ length: n }, () => (1 - damp) / n);
+      for (let i = 0; i < n; i += 1) {
+        for (let j = 0; j < n; j += 1) {
+          const w = adj[i]?.[j] ?? 0;
+          next[j] = (next[j] ?? 0) + damp * (pr[i] ?? 0) * (w / (outSum[i] ?? 1));
+        }
+      }
+      pr = next;
+    }
+    const s = pr.reduce((a, b) => a + b, 0) || 1;
+    pr = pr.map((x) => clamp01(x / s));
+    const H = -pr.reduce((a, p) => a + (p > 0 ? p * Math.log2(p) : 0), 0) / Math.log2(n);
+    const peak = Math.max(...pr);
+    const scalar = clamp01(0.55 * (1 - H) + 0.45 * peak);
+    const vecOut = vecClamp01(vec.map((v, i) => clamp01(v * (0.9 + r() * 0.08) + (i % 4 === 0 ? (peak - 0.5) * 0.08 : (H - 0.5) * 0.06))));
+    const fp = fp8([scalar, H, peak, damp, pr[0] ?? 0, pr[1] ?? 0, pr[2] ?? 0, pr[3] ?? 0]);
+    const sig = hex8(fnv1a32(`pr|${round4(H)}|${round4(peak)}|${round4(damp)}`));
+    ctx.emit("融合", "稳态分布摘要", { H: round4(H), peak: round4(peak), d: round4(damp) }, fp);
+    return { scalar, vec: vecOut, fp, sig };
+  });
+
+  factor("融合", "估计/Kalman/状态收敛", 0x0b9e0002, (r) => {
+    let x = (r() - 0.5) * 2;
+    let P = 1;
+    const Q = 0.02 + r() * 0.08;
+    const R = 0.05 + r() * 0.22 + ctx.env.radiation * 0.12;
+    let K = 0;
+    for (let i = 0; i < 26; i += 1) {
+      const z = x + (r() - 0.5) * Math.sqrt(R) * 2;
+      P = P + Q;
+      K = P / (P + R);
+      x = x + K * (z - x);
+      P = (1 - K) * P;
+    }
+    const conf = clamp01(1 - Math.min(1, Math.sqrt(P)));
+    const gain = clamp01(K);
+    const scalar = clamp01(0.58 * conf + 0.42 * gain);
+    const vecOut = vecClamp01(vec.map((v, i) => clamp01(v * (0.9 + r() * 0.06) + (i % 5 === 2 ? (conf - 0.5) * 0.09 : (gain - 0.5) * 0.07))));
+    const fp = fp8([scalar, conf, gain, Q, R, x, P, ctx.entropyScore]);
+    const sig = hex8(fnv1a32(`kf|${round4(conf)}|${round4(gain)}|${round4(R)}`));
+    ctx.emit("融合", "滤波收敛态", { conf: round4(conf), K: round4(K), P: round4(P) }, fp);
+    return { scalar, vec: vecOut, fp, sig };
+  });
+
+  factor("数理", "线代/谱半径/幂迭代", 0x0c1a0003, (r) => {
+    const n = 6;
+    const A = Array.from({ length: n }, (_, i) =>
+      Array.from({ length: n }, (_, j) => {
+        const v = vec[(i * n + j) % vec.length] ?? 0.5;
+        const o = obs[(i + j) % obs.length] ?? 0.5;
+        const c = (v * 0.7 + o * 0.3) - 0.5;
+        return c * (0.8 + r() * 0.4);
+      }),
+    );
+    let x = Array.from({ length: n }, () => 1 / Math.sqrt(n));
+    for (let it = 0; it < 28; it += 1) {
+      const y = Array.from({ length: n }, (_, i) => A[i]!.reduce((acc, aij, j) => acc + aij * (x[j] ?? 0), 0));
+      const norm = Math.sqrt(y.reduce((acc, v) => acc + v * v, 0)) || 1;
+      x = y.map((v) => v / norm);
+    }
+    const Ax = Array.from({ length: n }, (_, i) => A[i]!.reduce((acc, aij, j) => acc + aij * (x[j] ?? 0), 0));
+    const num = Ax.reduce((acc, v, i) => acc + v * (x[i] ?? 0), 0);
+    const den = x.reduce((acc, v) => acc + v * v, 0) || 1;
+    const lambda = num / den;
+    const rho = Math.abs(lambda);
+    const scalar = clamp01(Math.log10(1 + rho * 9) / 1.4);
+    const vecOut = vecClamp01(vec.map((v, i) => clamp01(v + (i % 3 === 0 ? (scalar - 0.5) * 0.08 : (rho - 0.5) * 0.05))));
+    const fp = fp8([scalar, clamp01(rho), lambda, n, x[0] ?? 0, x[1] ?? 0, x[2] ?? 0, x[3] ?? 0]);
+    const sig = hex8(fnv1a32(`lin|${round4(rho)}|${round4(lambda)}|${n}`));
+    ctx.emit("数理", "谱半径估计", { rho: round4(rho), lambda: round4(lambda) }, fp);
+    return { scalar, vec: vecOut, fp, sig };
+  });
+
+  factor("数理", "统计/稳健/MAD/分位数", 0x0d570004, (r) => {
+    const xs = [...vec, ...obs].map((x) => clamp01(x + (r() - 0.5) * 0.02));
+    const sorted = xs.slice().sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)] ?? 0.5;
+    const dev = xs.map((x) => Math.abs(x - median)).sort((a, b) => a - b);
+    const mad = dev[Math.floor(dev.length / 2)] ?? 0;
+    const q1 = sorted[Math.floor(sorted.length * 0.25)] ?? 0.25;
+    const q3 = sorted[Math.floor(sorted.length * 0.75)] ?? 0.75;
+    const iqr = Math.max(0, q3 - q1);
+    const robust = clamp01(1 - mad * 2.2);
+    const spread = clamp01(iqr * 1.4);
+    const scalar = clamp01(robust * 0.62 + spread * 0.38);
+    const vecOut = vecClamp01(vec.map((v, i) => clamp01(v * (0.9 + r() * 0.06) + (i % 4 === 1 ? (robust - 0.5) * 0.08 : (spread - 0.5) * 0.06))));
+    const fp = fp8([scalar, robust, spread, median, mad, q1, q3, iqr]);
+    const sig = hex8(fnv1a32(`stat|${round4(robust)}|${round4(spread)}|${round4(mad)}`));
+    ctx.emit("数理", "稳健统计摘要", { med: round4(median), mad: round4(mad), iqr: round4(iqr) }, fp);
+    return { scalar, vec: vecOut, fp, sig };
+  });
+
+  factor("文字", "信号/DFT/谱峰/平坦度", 0x0e770005, (r) => {
+    const n = 32;
+    const signal = Array.from({ length: n }, (_, i) => {
+      const v = vec[i % vec.length] ?? 0.5;
+      const o = obs[i % obs.length] ?? 0.5;
+      const base = v * 0.6 + o * 0.4;
+      const wiggle = Math.sin((i + 1) * 0.23 + (obs[0] ?? 0.5) * Math.PI * 2) * 0.08;
+      return base + wiggle + (r() - 0.5) * 0.02;
+    });
+    const mean = signal.reduce((a, b) => a + b, 0) / n;
+    const x = signal.map((v) => v - mean);
+    const mags: number[] = [];
+    for (let k = 1; k <= 8; k += 1) {
+      let re = 0;
+      let im = 0;
+      for (let i = 0; i < n; i += 1) {
+        const ang = (-2 * Math.PI * k * i) / n;
+        const xi = x[i] ?? 0;
+        re += xi * Math.cos(ang);
+        im += xi * Math.sin(ang);
+      }
+      mags.push(Math.sqrt(re * re + im * im));
+    }
+    const aMean = mags.reduce((a, b) => a + b, 0) / mags.length || 1;
+    const gMean = Math.exp(mags.reduce((a, b) => a + Math.log(Math.max(1e-9, b)), 0) / mags.length);
+    const flat = clamp01(gMean / aMean);
+    const peak = Math.max(...mags);
+    const peakN = clamp01(peak / (aMean * 3.2));
+    const scalar = clamp01(peakN * 0.62 + (1 - flat) * 0.38);
+    const vecOut = vecClamp01(vec.map((v, i) => clamp01(v + (i % 5 === 0 ? (peakN - 0.5) * 0.08 : (flat - 0.5) * 0.06))));
+    const fp = fp8([scalar, peakN, flat, aMean, gMean, mags[0] ?? 0, mags[1] ?? 0, mags[2] ?? 0]);
+    const sig = hex8(fnv1a32(`dft|${round4(peakN)}|${round4(flat)}|${round4(aMean)}`));
+    ctx.emit("文字", "频谱摘要", { peak: round4(peakN), flat: round4(flat) }, fp);
+    return { scalar, vec: vecOut, fp, sig };
+  });
+
+  factor("天机", "流体/雷诺数/湍流域", 0x0f1d0006, (r) => {
+    const T = ctx.env.temp + 273.15;
+    const p = Math.max(20000, ctx.env.pressure * 1000);
+    const rho = p / (287.05 * T);
+    const v = 0.5 + (obs[1] ?? 0.5) * 22;
+    const L = 0.03 + (obs[2] ?? 0.5) * 0.9;
+    const mu = 1.716e-5 * Math.pow(T / 273.15, 1.5) * (273.15 + 111) / (T + 111);
+    const Re = (rho * v * L) / Math.max(1e-9, mu);
+    const logRe = Math.log10(Math.max(1, Re));
+    const turbulence = clamp01((logRe - 3) / 4);
+    const scalar = clamp01(0.55 * turbulence + 0.45 * clamp01(ctx.env.radiation));
+    const vecOut = vecClamp01(vec.map((x, i) => clamp01(x * (0.9 + r() * 0.06) + (i % 3 === 2 ? (turbulence - 0.5) * 0.09 : (logRe / 7 - 0.5) * 0.06))));
+    const fp = fp8([scalar, turbulence, logRe / 7, rho / 2, v / 25, L, mu * 1e5, ctx.env.radiation]);
+    const sig = hex8(fnv1a32(`re|${round4(turbulence)}|${Math.round(logRe * 100)}|${Math.round(v * 10)}`));
+    ctx.emit("天机", "雷诺域折算", { Re: Math.round(Re), logRe: round4(logRe), turb: round4(turbulence) }, fp);
+    return { scalar, vec: vecOut, fp, sig };
+  });
+
+  factor("融合", "优化/Rosenbrock/收敛特征", 0x10110007, (r) => {
+    let x = (obs[6] ?? 0.5) * 3 - 1.5;
+    let y = (obs[7] ?? 0.5) * 3 - 1.5;
+    const a = 1;
+    const b = 100;
+    let lr = 0.0025 + r() * 0.002;
+    for (let i = 0; i < 90; i += 1) {
+      const dx = -2 * (a - x) - 4 * b * x * (y - x * x);
+      const dy = 2 * b * (y - x * x);
+      x -= dx * lr;
+      y -= dy * lr;
+      lr *= 0.995;
+    }
+    const f = (a - x) * (a - x) + b * (y - x * x) * (y - x * x);
+    const quality = 1 / (1 + Math.log1p(f));
+    const scalar = clamp01(quality);
+    const vecOut = vecClamp01(vec.map((v, i) => clamp01(v + (i % 4 === 0 ? (quality - 0.5) * 0.1 : (x - 0.5) * 0.02))));
+    const fp = fp8([scalar, quality, x, y, f > 0 ? Math.log10(f + 1) : 0, lr * 1000, ctx.timeScore, ctx.textScore]);
+    const sig = hex8(fnv1a32(`opt|${round4(quality)}|${round4(x)}|${round4(y)}`));
+    ctx.emit("融合", "收敛指标", { q: round4(quality), x: round4(x), y: round4(y) }, fp);
+    return { scalar, vec: vecOut, fp, sig };
+  });
+
+  factor("融合", "队列论/M-M-1/等待时间", 0x111e0008, (r) => {
+    const lambda = 0.4 + (obs[9] ?? 0.5) * 8;
+    const mu = 3.5 + (obs[10] ?? 0.5) * 10;
+    const rho = clamp01(Math.min(0.98, lambda / Math.max(0.1, mu)));
+    const W = 1 / Math.max(0.02, mu - lambda);
+    const L = lambda * W;
+    const scalar = clamp01((1 - rho) * 0.55 + clamp01(1 / (1 + Math.log1p(L))) * 0.45);
+    const vecOut = vecClamp01(vec.map((v, i) => clamp01(v * (0.9 + r() * 0.07) + (i % 5 === 3 ? (scalar - 0.5) * 0.09 : (rho - 0.5) * 0.06))));
+    const fp = fp8([scalar, rho, lambda / 10, mu / 14, W / 6, L / 20, ctx.entropyScore, ctx.env.pressure / 110]);
+    const sig = hex8(fnv1a32(`q|${round4(rho)}|${round4(lambda)}|${round4(mu)}`));
+    ctx.emit("融合", "稳态排队量", { rho: round4(rho), W: round4(W), L: round4(L) }, fp);
+    return { scalar, vec: vecOut, fp, sig };
+  });
+
+  factor("融合", "贝叶斯/后验一致性", 0x121e0009, (r) => {
+    let a = 2 + (ctx.timeScore + ctx.textScore) * 2;
+    let b = 2 + (1 - ctx.ichingScore + 1 - ctx.numerologyScore) * 1.5;
+    const k = 0.6 + r() * 0.9;
+    for (const s of factorScalars) {
+      a += s * k;
+      b += (1 - s) * k;
+    }
+    const post = a / (a + b);
+    const sharp = clamp01(1 - 4 * post * (1 - post));
+    const scalar = clamp01(post * 0.78 + sharp * 0.22);
+    const vecOut = vecClamp01(vec.map((v, i) => clamp01(v + (i % 2 === 1 ? (post - 0.5) * 0.08 : (sharp - 0.5) * 0.06))));
+    const fp = fp8([scalar, post, sharp, a / 20, b / 20, k, ctx.timeScore, ctx.entropyScore]);
+    const sig = hex8(fnv1a32(`bayes|${round4(post)}|${round4(sharp)}|${round4(k)}`));
+    ctx.emit("融合", "后验摘要", { post: round4(post), sharp: round4(sharp), k: round4(k) }, fp);
+    return { scalar, vec: vecOut, fp, sig };
+  });
+
+  const n = Math.max(1, factorScalars.length);
+  const meanScalar = factorScalars.reduce((acc, v) => acc + v, 0) / n;
+  const coverage = factorOk.reduce((acc, v) => acc + v, 0) / n;
+  const eVec = vecEntropy01(vec);
+  const eObs = vecEntropy01(obs);
+  const score01 = clamp01((meanScalar * 0.64 + eVec * 0.22 + eObs * 0.14) * (0.7 + coverage * 0.3));
   const signature = hex8(fnv1a32(`${hex8(sigAcc)}|${hex8(ctx.seed)}|${round4(score01)}`));
-  const fpOut = fp8([score01, vecEntropy01(vec), ctx.timeScore, ctx.textScore, ctx.ichingScore, ctx.numerologyScore, ctx.entropyScore, ctx.env.radiation]);
-  ctx.groupStart("融合", "多学科汇总", { n: 9, score01: round4(score01), sig: signature }, fpOut);
-  ctx.emit("融合", "多学科指纹", { sig: signature, e: round4(vecEntropy01(vec)) }, fpOut);
+  const fpOut = fp8([score01, eVec, meanScalar, coverage, eObs, ctx.timeScore, ctx.textScore, ctx.env.radiation]);
+  ctx.groupStart("融合", "多学科汇总", { n, cov: round4(coverage), m: round4(meanScalar), score01: round4(score01), sig: signature }, fpOut);
+  ctx.emit("融合", "多学科指纹", { sig: signature, e: round4(eVec), o: round4(eObs) }, fpOut);
   ctx.groupEnd("融合", "汇总封箱", { score01: round4(score01), sig: signature }, fpOut);
 
   return { score01, fp8: fpOut, signature };
@@ -961,19 +1236,6 @@ function calcElementsFromPillars(pillars: DivinationResult["carry"]["pillars"]) 
     metal: base.metal / sum,
     water: base.water / sum,
   };
-}
-
-function dominantElementOf(elements: DivinationResult["carry"]["elements"]) {
-  let best: keyof DivinationResult["carry"]["elements"] = "earth";
-  let bestVal = -1;
-  (Object.keys(elements) as (keyof DivinationResult["carry"]["elements"])[]).forEach((k) => {
-    const v = elements[k];
-    if (v > bestVal) {
-      bestVal = v;
-      best = k;
-    }
-  });
-  return best;
 }
 
 function scoreTime(elements: DivinationResult["carry"]["elements"]) {
@@ -1135,60 +1397,4 @@ function remapTo100(score01: number, jitter: number) {
   const breathe = (jitter - 0.5) * 0.06;
   const shaped = clamp01(s + breathe);
   return shaped * 100;
-}
-
-function pickVerdict(score: number, t: DivinationConfig["verdictThresholds"], changingLine: number) {
-  const s = score / 100;
-  if (s >= t.greatGood) return changingLine <= 2 ? "大吉，宜速战" : "大吉，乘势行";
-  if (s >= t.good) return changingLine <= 3 ? "吉，宜主动" : "吉，稳中进";
-  if (s >= t.flat) return changingLine <= 3 ? "平，待时机" : "平，宜观望";
-  return changingLine >= 5 ? "凶，宜守静" : "凶，慎言行";
-}
-
-function pickPoem(args: {
-  verdict: string;
-  seed: number;
-  dominantElement: keyof DivinationResult["carry"]["elements"];
-  hexagramName: string;
-  salt?: string;
-}) {
-  const salt = args.salt ? `|${args.salt}` : "";
-  const pick = makeRng((args.seed ^ fnv1a32(args.verdict + args.hexagramName + salt)) >>> 0);
-  const pool = poemPool(args.verdict, args.dominantElement);
-  const idx = Math.floor(pick() * pool.length);
-  return pool[idx] ?? "静观其变，勿急于名。";
-}
-
-function poemPool(verdict: string, el: keyof DivinationResult["carry"]["elements"]) {
-  const base = [
-    "灯火未明，先守一息。",
-    "风起于青萍之末，势成于无声。",
-    "一步不让，万步皆空。",
-    "欲速不达，欲稳则成。",
-    "天机不语，唯人自知。",
-    "行到水穷处，坐看云起时。",
-    "心有霓虹，脚踏尘埃。",
-    "算法在走，命数在变。",
-  ];
-  const byVerdict: Record<string, string[]> = {
-    "大吉，宜速战": ["雷动而行，勿失其时。", "今夜金光落指尖，明日可定乾坤。", "乘势而起，一击即中。"],
-    "大吉，乘势行": ["顺风不等人，起念便成章。", "势来如潮，踏浪而上。", "大道已开，莫问归期。"],
-    "吉，宜主动": ["先声夺人，后势自稳。", "心定则锋利，出手见分晓。", "一步先，步步先。"],
-    "吉，稳中进": ["以稳为刃，切开迷雾。", "慢半拍，反得全局。", "稳住气口，再推一寸。"],
-    "平，待时机": ["不争一时，争一势。", "此刻宜藏锋，待明日亮刃。", "按下暂停，胜过盲冲。"],
-    "平，宜观望": ["观其变，守其正。", "风未定，先系好舟。", "静看局面，自有落点。"],
-    "凶，宜守静": ["退一步不是输，是换命。", "此局不宜硬碰，宜断舍离。", "守住底线，即是转机。"],
-    "凶，慎言行": ["口为祸门，心为护符。", "慎言可保身，慎行可保局。", "少说一句，多留一线。"],
-  };
-  const byElement: Record<string, string[]> = {
-    wood: ["青木藏锋，先长根再发芽。", "枝叶向上，先稳土再逐风。"],
-    fire: ["火候未足，先蓄热再点燃。", "光可照路，亦可灼人。"],
-    earth: ["厚土不语，能载万物亦能埋雷。", "稳住重心，天地自宽。"],
-    metal: ["金刃需磨，先正其锋再断其物。", "冷光一闪，胜过百句豪言。"],
-    water: ["水善利万物而不争，绕开即是胜。", "深水不响，急流最险。"],
-  };
-
-  const v = byVerdict[verdict] ?? [];
-  const e = byElement[el] ?? [];
-  return [...v, ...e, ...base];
 }
