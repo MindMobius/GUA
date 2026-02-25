@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "@mantine/core/styles.css";
+import "katex/dist/katex.min.css";
+import "markstream-react/index.css";
 import "./globals.css";
 import { ColorSchemeScript } from "@mantine/core";
 import { Providers } from "./providers";
@@ -28,7 +30,7 @@ export default function RootLayout({
   return (
     <html lang="zh-CN">
       <head>
-        <ColorSchemeScript defaultColorScheme="dark" />
+        <ColorSchemeScript defaultColorScheme="light" />
       </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}

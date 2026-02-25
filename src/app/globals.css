@@ -1,10 +1,19 @@
 @import "tailwindcss";
 
 :root {
-  --bg: #0b0d10;
-  --fg: rgba(255, 255, 255, 0.92);
-  --line: rgba(255, 255, 255, 0.1);
-  --line-soft: rgba(255, 255, 255, 0.06);
+  --bg: #f3f1ed;
+  --bg-soft: #fbfaf7;
+  --surface: #ffffff;
+  --surface-2: #f6f4ef;
+  --ink: #1b1f24;
+  --ink-soft: #3a424a;
+  --muted: #6a737a;
+  --line: rgba(27, 31, 36, 0.12);
+  --line-strong: rgba(27, 31, 36, 0.2);
+  --accent: #ff7a3d;
+  --accent-soft: #ffb48a;
+  --shadow: rgba(20, 24, 28, 0.08);
+  --shadow-strong: rgba(20, 24, 28, 0.14);
 }
 
 @theme inline {
@@ -14,19 +23,18 @@
 
 body {
   background: var(--bg);
-  color: var(--fg);
+  color: var(--ink);
   font-family: var(--font-sans), ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto,
     "Helvetica Neue", Arial, "Noto Sans", "Liberation Sans", sans-serif;
 }
 
 .gua-bg {
   background:
-    radial-gradient(900px 520px at 50% -18%, rgba(255, 255, 255, 0.08), transparent 62%),
-    radial-gradient(700px 520px at 16% 18%, rgba(255, 255, 255, 0.035), transparent 66%),
-    radial-gradient(700px 520px at 84% 22%, rgba(255, 255, 255, 0.03), transparent 66%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 26%),
-    var(--bg);
+    radial-gradient(720px 520px at 50% -12%, rgba(255, 255, 255, 0.85), transparent 60%),
+    radial-gradient(520px 420px at 12% 10%, rgba(255, 255, 255, 0.7), transparent 64%),
+    linear-gradient(180deg, var(--bg-soft), var(--bg));
   position: relative;
+  isolation: isolate;
 }
 
 .gua-bg::before {
@@ -35,20 +43,162 @@ body {
   inset: 0;
   pointer-events: none;
   background:
-    repeating-linear-gradient(to bottom, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.045) 1px, transparent 1px, transparent 4px),
-    repeating-linear-gradient(to right, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.03) 1px, transparent 1px, transparent 52px);
-  opacity: 0.05;
+    repeating-linear-gradient(to bottom, rgba(27, 31, 36, 0.06), rgba(27, 31, 36, 0.06) 1px, transparent 1px, transparent 8px),
+    repeating-linear-gradient(to right, rgba(27, 31, 36, 0.05), rgba(27, 31, 36, 0.05) 1px, transparent 1px, transparent 64px);
+  opacity: 0.3;
+  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.6), transparent 84%);
 }
 
 .gua-panel {
+  position: relative;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--line);
   box-shadow:
-    0 0 0 1px rgba(255, 255, 255, 0.03) inset,
-    0 18px 60px rgba(0, 0, 0, 0.62);
+    0 0 0 1px rgba(255, 255, 255, 0.6) inset,
+    0 16px 40px var(--shadow);
+}
+
+.gua-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(120deg, transparent 40%, rgba(27, 31, 36, 0.04), transparent 64%),
+    repeating-linear-gradient(90deg, rgba(27, 31, 36, 0.05), rgba(27, 31, 36, 0.05) 1px, transparent 1px, transparent 28px);
+  opacity: 0.15;
+}
+
+.gua-panel::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-top: 1px solid rgba(27, 31, 36, 0.08);
+  opacity: 0.4;
+}
+
+.gua-panel-strong {
+  background: var(--surface);
+  border-color: var(--line-strong);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.7) inset,
+    0 18px 44px var(--shadow-strong);
+}
+
+.gua-panel-soft {
+  background: var(--surface-2);
+  border-color: rgba(27, 31, 36, 0.1);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.55) inset,
+    0 12px 30px rgba(20, 24, 28, 0.08);
+}
+
+.gua-panel-muted {
+  background: var(--surface-2);
+  border-color: rgba(27, 31, 36, 0.12);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.6) inset,
+    0 14px 34px rgba(20, 24, 28, 0.09);
 }
 
 .gua-mark {
   letter-spacing: 0.42em;
   padding-left: 0.42em;
+  color: var(--ink);
+  border-color: var(--line-strong);
+  background: rgba(255, 255, 255, 0.7);
+  box-shadow: 0 6px 16px rgba(20, 24, 28, 0.08);
+}
+
+.gua-hero {
+  text-align: center;
+}
+
+.gua-title {
+  letter-spacing: 0.06em;
+}
+
+.gua-subtitle {
+  color: var(--muted);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.gua-phase {
+  padding: 0 6px;
+}
+
+.gua-phase-labels {
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+}
+
+.gua-phase-active {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.gua-phase-idle {
+  color: var(--muted);
+}
+
+.gua-stepper {
+  display: flex;
+  gap: 10px;
+}
+
+.gua-step {
+  flex: 1;
+  height: 2px;
+  background: var(--line);
+  border-radius: 999px;
+}
+
+.gua-step-active {
+  background: var(--accent);
+}
+
+.gua-phase-current {
+  color: var(--muted);
+  text-align: center;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+}
+
+.gua-section-title {
+  color: var(--ink);
+  letter-spacing: 0.08em;
+}
+
+.gua-section-sub {
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.gua-hint {
+  color: var(--muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.gua-chip {
+  border-color: rgba(27, 31, 36, 0.18);
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--ink);
+}
+
+.gua-input-actions {
+  margin-top: 6px;
+}
+
+.gua-progress {
+  background: rgba(27, 31, 36, 0.08);
+}
+
+.gua-progress .mantine-Progress-section {
+  background: var(--accent);
 }
 
 .gua-compass {
@@ -56,6 +206,10 @@ body {
   width: min(340px, 100%);
   aspect-ratio: 1 / 1;
   margin: 0 auto;
+}
+
+.gua-compass-shell {
+  padding: 18px 0;
 }
 
 .gua-compass-canvas {
@@ -70,82 +224,399 @@ body {
   border-radius: 999px;
   pointer-events: none;
   box-shadow:
-    0 0 0 1px rgba(255, 255, 255, 0.14) inset,
-    0 0 28px rgba(255, 255, 255, 0.08),
-    0 0 90px rgba(255, 255, 255, 0.04);
-}
-
-.gua-glitch {
-  position: relative;
-  display: inline-block;
-}
-
-.gua-glitch::before,
-.gua-glitch::after {
-  content: attr(data-text);
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  opacity: 0.55;
-}
-
-.gua-glitch::before {
-  transform: translate(1px, -1px);
-  color: rgba(255, 255, 255, 0.6);
-  filter: blur(0.15px);
-  clip-path: inset(0 0 55% 0);
-}
-
-.gua-glitch::after {
-  transform: translate(-1px, 1px);
-  color: rgba(0, 0, 0, 0.65);
-  mix-blend-mode: screen;
-  filter: blur(0.15px);
-  clip-path: inset(55% 0 0 0);
-}
-
-.gua-glitch {
-  animation: gua-glitch 1900ms linear infinite;
-}
-
-@keyframes gua-glitch {
-  0% {
-    opacity: 1;
-  }
-  2% {
-    opacity: 0.92;
-  }
-  3% {
-    opacity: 1;
-  }
-  13% {
-    transform: skewX(-0.5deg);
-  }
-  14% {
-    transform: none;
-  }
-  45% {
-    opacity: 0.97;
-  }
-  46% {
-    opacity: 1;
-  }
-  100% {
-    opacity: 1;
-  }
+    0 0 0 1px rgba(27, 31, 36, 0.2) inset,
+    0 12px 30px rgba(20, 24, 28, 0.08);
 }
 
 .gua-track {
   position: absolute;
   inset: 0 auto 0 0;
   pointer-events: none;
-  opacity: 0.55;
+  opacity: 0.35;
   background-image: repeating-linear-gradient(
     to right,
-    rgba(255, 255, 255, 0.08),
-    rgba(255, 255, 255, 0.08) 1px,
+    rgba(27, 31, 36, 0.2),
+    rgba(27, 31, 36, 0.2) 1px,
     transparent 1px,
     transparent 12px
   );
   mask-image: linear-gradient(to bottom, transparent, black 12%, black 88%, transparent);
+}
+
+.gua-mono {
+  font-family: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
+}
+
+.gua-formula-block {
+  padding: 8px 0 0;
+}
+
+.gua-formula-block .katex-display {
+  margin: 0;
+}
+
+.gua-formula-block .katex {
+  font-size: clamp(18px, 2.6vw, 24px);
+  color: var(--ink);
+}
+
+.gua-params {
+  margin-top: 4px;
+}
+
+.gua-param-item {
+  border-bottom: 1px solid rgba(27, 31, 36, 0.08);
+  padding: 6px 0;
+}
+
+.gua-param-key {
+  font-family: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
+  letter-spacing: 0.14em;
+  color: var(--ink);
+}
+
+.gua-param-value {
+  font-family: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
+  color: var(--ink);
+  letter-spacing: 0.08em;
+}
+
+.gua-param-desc {
+  color: var(--muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.gua-param-table {
+  border: 1px solid rgba(27, 31, 36, 0.1);
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.45);
+}
+
+.gua-param-head,
+.gua-param-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 1.6fr) minmax(88px, 1fr) minmax(88px, 0.9fr);
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+}
+
+.gua-param-head {
+  background: rgba(27, 31, 36, 0.04);
+  border-bottom: 1px solid rgba(27, 31, 36, 0.08);
+}
+
+.gua-param-row {
+  border-bottom: 1px solid rgba(27, 31, 36, 0.08);
+}
+
+.gua-param-row:last-child {
+  border-bottom: none;
+}
+
+.gua-param-table .gua-param-row:nth-child(2n) {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.gua-param-head-cell {
+  color: var(--muted);
+  letter-spacing: 0.12em;
+}
+
+.gua-param-meaning {
+  color: var(--ink-soft);
+  line-height: 1.45;
+}
+
+.gua-param-math {
+  justify-self: center;
+}
+
+.gua-param-math-value {
+  justify-self: end;
+}
+
+.gua-param-math .markstream-react {
+  font-family: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
+}
+
+.gua-param-math .markstream-react p {
+  margin: 0;
+}
+
+.gua-param-math .katex-display {
+  margin: 0;
+}
+
+.gua-param-math .katex {
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.gua-param-math-value .markstream-react {
+  text-align: right;
+}
+
+.gua-stream-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.gua-stream-header {
+  margin-bottom: 2px;
+}
+
+.gua-stream-body {
+  font-size: 14px;
+  line-height: 1.75;
+  color: var(--ink);
+}
+
+.gua-stream-body-inner {
+  min-height: 24px;
+}
+
+.gua-scroll-body {
+  max-height: 360px;
+  overflow-y: auto;
+  padding-right: 6px;
+}
+
+.gua-formula-panel {
+  cursor: pointer;
+}
+
+.gua-formula-fit {
+  overflow: hidden;
+}
+
+.gua-formula-modal {
+  max-height: 80vh;
+  overflow: hidden;
+  padding: 12px;
+}
+
+.gua-stream-body .markstream-react {
+  font-family: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
+}
+
+.gua-stream-body .markstream-react h1,
+.gua-stream-body .markstream-react h2,
+.gua-stream-body .markstream-react h3 {
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  letter-spacing: 0.08em;
+  color: var(--ink);
+  margin: 12px 0 6px;
+}
+
+.gua-stream-body .markstream-react h1 {
+  font-size: 18px;
+}
+
+.gua-stream-body .markstream-react h2 {
+  font-size: 16px;
+}
+
+.gua-stream-body .markstream-react h3 {
+  font-size: 14px;
+}
+
+.gua-stream-body .markstream-react ul {
+  padding-left: 18px;
+  margin: 6px 0;
+}
+
+.gua-stream-body .markstream-react li {
+  margin: 4px 0;
+}
+
+.gua-stream-body .markstream-react code {
+  background: rgba(27, 31, 36, 0.06);
+  border: 1px solid rgba(27, 31, 36, 0.12);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+.gua-panel-traditional {
+  background: #f8f2e8;
+  border-color: rgba(63, 48, 32, 0.18);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.6) inset,
+    0 16px 36px rgba(60, 46, 30, 0.14);
+}
+
+.gua-panel-traditional::before {
+  background:
+    linear-gradient(120deg, transparent 40%, rgba(80, 62, 44, 0.06), transparent 64%),
+    repeating-linear-gradient(90deg, rgba(80, 62, 44, 0.06), rgba(80, 62, 44, 0.06) 1px, transparent 1px, transparent 30px);
+  opacity: 0.2;
+}
+
+.gua-panel-traditional::after {
+  border-top: 1px solid rgba(80, 62, 44, 0.16);
+  opacity: 0.6;
+}
+
+.gua-panel-traditional .gua-stream-header {
+  position: relative;
+}
+
+.gua-panel-traditional .gua-section-title {
+  color: #3d2f22;
+}
+
+.gua-panel-traditional .gua-hint {
+  color: rgba(61, 47, 34, 0.7);
+}
+
+.gua-panel-modern {
+  background: #eef1f5;
+  border-color: rgba(37, 45, 54, 0.18);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.6) inset,
+    0 18px 40px rgba(28, 34, 42, 0.12);
+}
+
+.gua-panel-modern::before {
+  background:
+    linear-gradient(120deg, transparent 40%, rgba(30, 38, 46, 0.08), transparent 64%),
+    repeating-linear-gradient(0deg, rgba(30, 38, 46, 0.06), rgba(30, 38, 46, 0.06) 1px, transparent 1px, transparent 18px),
+    repeating-linear-gradient(90deg, rgba(30, 38, 46, 0.05), rgba(30, 38, 46, 0.05) 1px, transparent 1px, transparent 54px);
+  opacity: 0.18;
+}
+
+.gua-panel-modern::after {
+  border-top: 1px solid rgba(30, 38, 46, 0.16);
+  opacity: 0.6;
+}
+
+.gua-stream-formula .katex-display {
+  margin: 6px 0 10px;
+}
+
+.gua-stream-formula .katex {
+  font-size: clamp(18px, 2.6vw, 24px);
+  color: var(--ink);
+}
+
+.gua-verdict {
+  letter-spacing: 0.06em;
+}
+
+.gua-score {
+  letter-spacing: 0.08em;
+}
+
+.gua-poem {
+  color: var(--ink-soft);
+}
+
+.gua-footer {
+  color: var(--muted);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.gua-alert {
+  background: rgba(255, 122, 61, 0.08);
+  border: 1px solid rgba(255, 122, 61, 0.2);
+  color: var(--ink);
+}
+
+.mantine-Button-root {
+  background: transparent;
+  border: 1px solid rgba(27, 31, 36, 0.32);
+  color: rgba(27, 31, 36, 0.86);
+  box-shadow: none;
+  transition: border-color 180ms ease, box-shadow 180ms ease, color 180ms ease;
+}
+
+.mantine-Button-root:hover {
+  border-color: rgba(27, 31, 36, 0.6);
+  color: rgba(27, 31, 36, 1);
+  box-shadow: 0 6px 12px rgba(20, 24, 28, 0.08);
+}
+
+.mantine-Button-root[data-variant="filled"] {
+  background: transparent;
+  border-color: rgba(27, 31, 36, 0.6);
+  color: rgba(27, 31, 36, 0.95);
+}
+
+.mantine-Button-root[data-variant="filled"]:hover {
+  border-color: rgba(27, 31, 36, 0.9);
+}
+
+.mantine-Button-root[data-variant="default"] {
+  background: transparent;
+  border-color: rgba(27, 31, 36, 0.28);
+  color: rgba(27, 31, 36, 0.78);
+}
+
+.mantine-Button-root[data-variant="default"]:hover {
+  border-color: rgba(27, 31, 36, 0.6);
+  color: rgba(27, 31, 36, 1);
+}
+
+.mantine-Button-root:disabled {
+  opacity: 0.5;
+  border-color: var(--line);
+  box-shadow: none;
+}
+
+.mantine-Input-label {
+  color: var(--ink);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.mantine-Input-description {
+  color: var(--muted);
+}
+
+.mantine-Input-input,
+.mantine-Textarea-input {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.6) inset;
+}
+
+.mantine-Input-input:focus,
+.mantine-Textarea-input:focus {
+  border-color: var(--accent);
+  box-shadow:
+    0 0 0 1px rgba(255, 122, 61, 0.2) inset,
+    0 0 0 2px rgba(255, 122, 61, 0.14);
+}
+
+.mantine-Input-input::placeholder,
+.mantine-Textarea-input::placeholder {
+  color: rgba(106, 115, 122, 0.7);
+}
+
+.mantine-Badge-root {
+  border: 1px solid var(--line-strong);
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--ink);
+  box-shadow: 0 6px 16px rgba(20, 24, 28, 0.08);
+}
+
+.mantine-Code-root {
+  background: rgba(246, 245, 242, 0.9);
+  border: 1px solid var(--line);
+  color: var(--ink);
+}
+
+.mantine-Divider-root {
+  border-color: var(--line);
 }

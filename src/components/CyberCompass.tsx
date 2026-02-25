@@ -54,8 +54,8 @@ export function CyberCompass({ className, intensity = 1 }: CyberCompassProps) {
       ctx.translate(cx, cy);
 
       const g = ctx.createRadialGradient(0, 0, r * 0.1, 0, 0, r * 1.1);
-      g.addColorStop(0, `rgba(255, 255, 255, ${0.12 * pulse})`);
-      g.addColorStop(0.6, `rgba(255, 255, 255, ${0.04 * pulse})`);
+      g.addColorStop(0, `rgba(27, 31, 36, ${0.12 * pulse})`);
+      g.addColorStop(0.6, `rgba(27, 31, 36, ${0.04 * pulse})`);
       g.addColorStop(1, "rgba(0, 0, 0, 0)");
       ctx.fillStyle = g;
       ctx.beginPath();
@@ -65,9 +65,9 @@ export function CyberCompass({ className, intensity = 1 }: CyberCompassProps) {
       ctx.rotate(rot);
 
       ctx.lineWidth = 1.2;
-      ctx.strokeStyle = `rgba(255, 255, 255, ${0.55 * pulse})`;
+      ctx.strokeStyle = `rgba(27, 31, 36, ${0.55 * pulse})`;
       ctx.shadowBlur = 14;
-      ctx.shadowColor = "rgba(255, 255, 255, 0.18)";
+      ctx.shadowColor = "rgba(27, 31, 36, 0.18)";
 
       ctx.beginPath();
       ctx.arc(0, 0, r, 0, Math.PI * 2);
@@ -87,7 +87,7 @@ export function CyberCompass({ className, intensity = 1 }: CyberCompassProps) {
 
       ctx.shadowBlur = 0;
       ctx.lineWidth = 1;
-      ctx.strokeStyle = `rgba(255, 255, 255, ${0.28 + 0.18 * pulse})`;
+      ctx.strokeStyle = `rgba(27, 31, 36, ${0.28 + 0.18 * pulse})`;
       ctx.beginPath();
       ctx.arc(0, 0, r * 0.62, 0, Math.PI * 2);
       ctx.stroke();
@@ -118,7 +118,7 @@ function drawBagua(ctx: CanvasRenderingContext2D, radius: number, pulse: number)
   ctx.save();
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillStyle = `rgba(255, 255, 255, ${0.55 * pulse})`;
+  ctx.fillStyle = `rgba(27, 31, 36, ${0.55 * pulse})`;
   ctx.font = `${Math.max(14, Math.floor(radius * 0.18))}px ui-serif, STKaiti, KaiTi, Songti SC, serif`;
   for (let i = 0; i < 8; i += 1) {
     const a = (i / 8) * Math.PI * 2 - Math.PI / 2;
@@ -127,7 +127,7 @@ function drawBagua(ctx: CanvasRenderingContext2D, radius: number, pulse: number)
     ctx.fillText(names[i] ?? "", x, y);
   }
 
-  ctx.strokeStyle = `rgba(255, 255, 255, ${0.18 + 0.16 * pulse})`;
+  ctx.strokeStyle = `rgba(27, 31, 36, ${0.18 + 0.16 * pulse})`;
   ctx.lineWidth = 1.1;
   for (let i = 0; i < 8; i += 1) {
     const a = (i / 8) * Math.PI * 2;
@@ -143,7 +143,7 @@ function drawCodeRing(ctx: CanvasRenderingContext2D, radius: number, pulse: numb
   ctx.save();
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillStyle = `rgba(255, 255, 255, ${0.22 + 0.08 * pulse})`;
+  ctx.fillStyle = `rgba(27, 31, 36, ${0.22 + 0.08 * pulse})`;
   ctx.font = `${Math.max(10, Math.floor(radius * 0.09))}px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace`;
   const glyphs = "0101 0011 1100 0110 1010 0100";
   const count = 18;

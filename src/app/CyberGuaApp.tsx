@@ -6,24 +6,21 @@ import {
   Badge,
   Box,
   Button,
-  Code,
   Container,
-  Divider,
   Group,
   Paper,
-  Progress,
-  ScrollArea,
   SimpleGrid,
   Stack,
   Text,
   TextInput,
   Textarea,
   Title,
-  UnstyledButton,
 } from "@mantine/core";
-import { CyberCompass } from "@/components/CyberCompass";
+import { Lunar } from "lunar-javascript";
+import { StreamingPanels } from "@/components/StreamingPanels";
 import type { DivinationResult, DivinationTraceEvent } from "@/utils/divinationEngine";
 import { divineWithTrace } from "@/utils/divinationEngine";
+import { buildFormulaData } from "@/utils/formulaEngine";
 
 type Phase = "input" | "computing" | "result";
 
@@ -62,9 +59,8 @@ export default function CyberGuaApp() {
   const [error, setError] = useState<string | null>(null);
   const [trace, setTrace] = useState<DivinationTraceEvent[]>([]);
   const [traceVisible, setTraceVisible] = useState(0);
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [formulaSeed, setFormulaSeed] = useState<number | null>(null);
 
-  const logEndRef = useRef<HTMLDivElement | null>(null);
   const runIdRef = useRef(0);
 
   const entropyRef = useRef({
@@ -106,10 +102,6 @@ export default function CyberGuaApp() {
     return () => window.removeEventListener("pointermove", onMove);
   }, []);
 
-  useEffect(() => {
-    logEndRef.current?.scrollIntoView({ block: "end" });
-  }, [traceVisible]);
-
   const onStart = async () => {
     const q = question.trim();
     if (!q) {
@@ -119,10 +111,10 @@ export default function CyberGuaApp() {
 
     setError(null);
     setPhase("computing");
-    const entropy = entropyRef.current.seed >>> 0;
+    const entropy = (entropyRef.current.seed ^ Date.now()) >>> 0;
     setTrace([]);
     setTraceVisible(0);
-    setCollapsed({});
+    setFormulaSeed(entropy);
 
     const runId = (runIdRef.current += 1);
     try {
@@ -168,91 +160,88 @@ export default function CyberGuaApp() {
     setError(null);
     setTrace([]);
     setTraceVisible(0);
-    setCollapsed({});
     setQuestion("");
     setNickname("");
     setDatetimeValue(toDatetimeLocalValue(new Date()));
     setPhase("input");
+    setFormulaSeed(null);
   };
 
   const canStart = question.trim().length > 0 && phase === "input";
   const shortcutHint = "Ctrl/⌘ + Enter";
 
-  const shownTrace = useMemo(() => {
-    const raw = trace.slice(0, traceVisible);
-    const out: DivinationTraceEvent[] = [];
-    let hiddenDepth: number | null = null;
-
-    for (const evt of raw) {
-      if (hiddenDepth !== null) {
-        if (evt.kind === "group_end" && evt.depth === hiddenDepth) {
-          hiddenDepth = null;
-          continue;
-        }
-        if (evt.depth > hiddenDepth) continue;
-        hiddenDepth = null;
-      }
-
-      if (evt.kind === "group_end") continue;
-
-      if (evt.kind === "group_start" && collapsed[evt.id]) {
-        out.push(evt);
-        hiddenDepth = evt.depth;
-        continue;
-      }
-
-      out.push(evt);
-    }
-
-    return out;
-  }, [trace, traceVisible, collapsed]);
-
-  const digestInfo = useMemo(() => {
-    const evt = [...trace].reverse().find((e) => e.phase === "裁决" && e.message === "签名链校验");
-    const root = evt?.rootDigest ?? (typeof evt?.data?.root === "string" ? evt?.data?.root : undefined);
-    const head = typeof evt?.data?.head === "string" ? evt?.data?.head : undefined;
-    const tail = typeof evt?.data?.tail === "string" ? evt?.data?.tail : undefined;
-    const ok = evt?.data?.ok === 1;
-    return { root, head, tail, ok };
+  const phaseTerms = useMemo(() => {
+    const terms = Array.from(new Set(trace.map((item) => item.phase).filter(Boolean)));
+    return terms.length > 0 ? terms : ["易经", "融合", "裁决"];
   }, [trace]);
-
-  const summaryFp = useMemo(() => {
-    const evt = [...trace].reverse().find((e) => e.message === "多学科因子注入" && Array.isArray(e.fp));
-    return Array.isArray(evt?.fp) ? evt.fp : undefined;
-  }, [trace]);
+  const formulaData = useMemo(() => {
+    if (formulaSeed === null) return null;
+    return buildFormulaData(formulaSeed, phaseTerms);
+  }, [formulaSeed, phaseTerms]);
+  const formulaMarkdown = useMemo(() => {
+    return buildFormulaMarkdown(formulaData, traceVisible, trace.length, phase);
+  }, [formulaData, traceVisible, trace.length, phase]);
+  const formulaParams = useMemo(() => {
+    if (phase !== "result") return [];
+    return formulaData?.params ?? [];
+  }, [formulaData, phase]);
+  const scienceMarkdown = useMemo(() => {
+    const slice = phase === "result" ? trace : trace.slice(0, traceVisible);
+    return buildScienceMarkdown(slice);
+  }, [phase, trace, traceVisible]);
+  const lunarLines = useMemo(() => buildLunarLines(datetime), [datetime]);
+  const lunarMarkdown = useMemo(() => {
+    return streamLines(lunarLines, traceVisible, trace.length, phase);
+  }, [lunarLines, traceVisible, trace.length, phase]);
+  const phaseLabels = ["输入", "推演", "归一"];
+  const phaseIndex = phase === "input" ? 0 : phase === "computing" ? 1 : 2;
 
   return (
     <Box className="gua-bg" mih="100dvh">
-      <Container size="md" py={56}>
-        <Stack gap={36}>
-          <Stack gap={6} align="center">
+      <Container size="sm" py={64}>
+        <Stack gap={32}>
+          <Stack gap={10} align="center" className="gua-hero">
             <Badge variant="outline" color="gray" radius="xl" size="lg" className="gua-mark">
               GUA
             </Badge>
-            <Title order={1} ff="ui-serif, STSong, Songti SC, SimSun, serif" fw={600}>
+            <Title order={1} className="gua-title" fw={600}>
               赛博算卦
             </Title>
-            <Text fz="sm" c="dimmed" ff="var(--mantine-font-family-monospace)" style={{ letterSpacing: "0.18em" }}>
+            <Text fz="sm" className="gua-subtitle">
               输入极简 · 过程极繁 · 输出极决
             </Text>
           </Stack>
 
+          <Stack gap={8} className="gua-phase">
+            <Group justify="space-between" className="gua-phase-labels">
+              {phaseLabels.map((label, index) => (
+                <Text key={label} fz="xs" className={index <= phaseIndex ? "gua-phase-active" : "gua-phase-idle"}>
+                  {label}
+                </Text>
+              ))}
+            </Group>
+            <Box className="gua-stepper">
+              {phaseLabels.map((label, index) => (
+                <Box key={label} className={index <= phaseIndex ? "gua-step gua-step-active" : "gua-step"} />
+              ))}
+            </Box>
+            <Text fz="xs" className="gua-phase-current">
+              当前阶段 · {phaseLabels[phaseIndex]}
+            </Text>
+          </Stack>
+
           {phase === "input" ? (
-            <Paper withBorder radius="lg" p="xl" bg="rgba(0,0,0,0.45)" className="gua-panel">
-              <Stack gap="lg">
-                <Group justify="space-between" align="flex-start" wrap="nowrap" gap="xl">
-                  <Stack gap={6}>
-                    <Text fw={600} ff="ui-serif, STKaiti, KaiTi, Songti SC, serif" style={{ letterSpacing: "0.18em" }}>
-                      起卦
-                    </Text>
-                    <Text c="dimmed" fz="sm">
-                      写下所问之事，余者交给推演。结果只给一句判词、一组分数、一句偈语。
-                    </Text>
-                  </Stack>
-                  <Badge variant="light" color="gray" radius="md" ff="var(--mantine-font-family-monospace)">
-                    {shortcutHint}
+            <Paper radius="md" p="xl" className="gua-panel">
+              <Stack gap="md">
+                <Group justify="space-between" align="center">
+                  <Text fw={600} className="gua-section-title">
+                    起卦输入
+                  </Text>
+                  <Badge variant="light" color="gray" radius="md" className="gua-chip">
+                    步骤 1/3
                   </Badge>
                 </Group>
+                <Text className="gua-section-sub">写下所问之事，余者交给推演。结果只给一条公式。</Text>
 
                 <Textarea
                   label="所问之事"
@@ -264,29 +253,21 @@ export default function CyberGuaApp() {
                   maxRows={6}
                   maxLength={120}
                   description={
-                    <Text component="span" fz="xs" c="dimmed" ff="var(--mantine-font-family-monospace)">
+                    <Text component="span" fz="xs" className="gua-hint">
                       {Math.min(120, question.length)}/120
                     </Text>
                   }
-                  styles={{
-                    label: { fontFamily: "ui-serif, STKaiti, KaiTi, Songti SC, serif", letterSpacing: "0.14em" },
-                    input: { fontFamily: "var(--mantine-font-family-monospace)" },
-                  }}
                   onKeyDown={(e) => {
                     if ((e.ctrlKey || e.metaKey) && e.key === "Enter") onStart();
                   }}
                 />
 
-                <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="lg">
+                <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
                   <TextInput
                     label="起卦时间"
                     type="datetime-local"
                     value={datetimeValue}
                     onChange={(e) => setDatetimeValue(e.currentTarget.value)}
-                    styles={{
-                      label: { fontFamily: "ui-serif, STKaiti, KaiTi, Songti SC, serif", letterSpacing: "0.14em" },
-                      input: { fontFamily: "var(--mantine-font-family-monospace)" },
-                    }}
                   />
                   <TextInput
                     label="求测人称呼（可选）"
@@ -294,256 +275,51 @@ export default function CyberGuaApp() {
                     value={nickname}
                     onChange={(e) => setNickname(e.currentTarget.value)}
                     maxLength={24}
-                    styles={{
-                      label: { fontFamily: "ui-serif, STKaiti, KaiTi, Songti SC, serif", letterSpacing: "0.14em" },
-                      input: { fontFamily: "var(--mantine-font-family-monospace)" },
-                    }}
                   />
                 </SimpleGrid>
 
                 {error ? (
-                  <Alert color="gray" variant="light" radius="md" ff="var(--mantine-font-family-monospace)">
+                  <Alert color="gray" variant="light" radius="md" className="gua-alert">
                     {error}
                   </Alert>
                 ) : null}
 
-                <Button fullWidth radius="xl" size="md" onClick={onStart} disabled={!canStart}>
-                  起卦
-                </Button>
+                <Group justify="space-between" align="center" className="gua-input-actions">
+                  <Text fz="xs" className="gua-hint">
+                    {shortcutHint}
+                  </Text>
+                  <Button radius="xl" size="md" onClick={onStart} disabled={!canStart}>
+                    起卦
+                  </Button>
+                </Group>
               </Stack>
             </Paper>
           ) : null}
 
           {phase === "computing" ? (
-            <Paper withBorder radius="lg" p="xl" bg="rgba(0,0,0,0.45)" className="gua-panel">
-              <Stack gap="xl">
-                <Group justify="space-between" align="flex-end">
-                  <Stack gap={4}>
-                    <Text fw={600} ff="ui-serif, STKaiti, KaiTi, Songti SC, serif" style={{ letterSpacing: "0.18em" }}>
-                      推演中
-                    </Text>
-                    <Group gap="xs">
-                      <Badge variant="outline" color="gray" radius="sm">
-                        {traceVisible > 0 ? trace[Math.min(traceVisible - 1, trace.length - 1)]?.phase : "启封"}
-                      </Badge>
-                      <Text fz="xs" c="dimmed" ff="var(--mantine-font-family-monospace)">
-                        {traceVisible}/{Math.max(1, trace.length)}
-                      </Text>
-                    </Group>
-                  </Stack>
-                  <Text fz="xs" c="dimmed">
-                    本地计算 · 逐步回放
-                  </Text>
-                </Group>
-
-                <Progress
-                  value={(traceVisible / Math.max(1, trace.length)) * 100}
-                  radius="xl"
-                  color="gray"
-                  styles={{
-                    root: { background: "rgba(255,255,255,0.06)" },
-                    section: { transition: "width 240ms ease" },
-                  }}
-                />
-
-                <SimpleGrid cols={{ base: 1, md: 2 }} spacing="xl">
-                  <Box>
-                    <Box className="gua-compass">
-                      <CyberCompass className="gua-compass-canvas" intensity={0.85} />
-                      <Box className="gua-compass-ring" />
-                    </Box>
-                  </Box>
-
-                  <Paper withBorder radius="md" p="md" bg="rgba(0,0,0,0.35)">
-                    <Group justify="space-between" mb="sm">
-                      <Text fw={600} ff="ui-serif, STKaiti, KaiTi, Songti SC, serif" style={{ letterSpacing: "0.14em" }}>
-                        推演日志
-                      </Text>
-                      <Text fz="xs" c="dimmed" ff="var(--mantine-font-family-monospace)">
-                        可见即可信
-                      </Text>
-                    </Group>
-                    <Group justify="space-between" align="center" mb="sm" wrap="nowrap">
-                      <Group gap="xs" wrap="nowrap">
-                        <Badge variant={digestInfo.ok ? "light" : "outline"} color="gray" radius="sm">
-                          {digestInfo.ok ? "校验通过" : "校验待定"}
-                        </Badge>
-                        <Code fz="xs" c="dimmed">
-                          root:{digestInfo.root ? shortHash(digestInfo.root) : "------"}
-                        </Code>
-                        <Code fz="xs" c="dimmed">
-                          head:{digestInfo.head ? shortHash(digestInfo.head) : "------"}
-                        </Code>
-                        <Code fz="xs" c="dimmed">
-                          tail:{digestInfo.tail ? shortHash(digestInfo.tail) : "------"}
-                        </Code>
-                      </Group>
-                      {summaryFp ? <Fingerprint fp={summaryFp} /> : null}
-                    </Group>
-                    <Divider opacity={0.2} />
-                    <ScrollArea h={360} mt="sm" type="always" scrollbars="y">
-                      <Stack gap={10} py={6}>
-                        {shownTrace.map((evt, idx) => {
-                          const isGroup = evt.kind === "group_start";
-                          const isCollapsed = isGroup && !!collapsed[evt.id];
-                          const indent = evt.depth * 12;
-                          const time = formatTime(evt.t);
-                          const chain = `${shortHash(evt.prev)}→${shortHash(evt.hash)}`;
-                          const gd = evt.groupDigest ? shortHash(evt.groupDigest) : null;
-
-                          return (
-                            <Box key={evt.id} pos="relative">
-                              {indent > 0 ? <Box className="gua-track" style={{ width: indent }} /> : null}
-                              <Group gap="sm" align="baseline" wrap="nowrap" style={{ paddingLeft: indent }}>
-                                <Text
-                                  fz="xs"
-                                  c="dimmed"
-                                  ff="var(--mantine-font-family-monospace)"
-                                  style={{ width: 44, flex: "0 0 44px" }}
-                                >
-                                  {String(idx + 1).padStart(2, "0")}
-                                </Text>
-                                <Text
-                                  fz="xs"
-                                  c="dimmed"
-                                  ff="var(--mantine-font-family-monospace)"
-                                  style={{ width: 84, flex: "0 0 84px" }}
-                                >
-                                  {time}
-                                </Text>
-                                <Badge
-                                  variant={isGroup ? "outline" : "light"}
-                                  color="gray"
-                                  radius="sm"
-                                  ff="var(--mantine-font-family-monospace)"
-                                  style={{ flex: "0 0 auto" }}
-                                >
-                                  {evt.phase}
-                                </Badge>
-
-                                {isGroup ? (
-                                  <UnstyledButton
-                                    onClick={() =>
-                                      setCollapsed((prev) => ({ ...prev, [evt.id]: !prev[evt.id] }))
-                                    }
-                                    style={{ flex: 1 }}
-                                  >
-                                    <Group gap="xs" wrap="nowrap" align="baseline">
-                                      <Text fz="sm" ff="var(--mantine-font-family-monospace)">
-                                        {isCollapsed ? "▸" : "▾"} {evt.message}
-                                      </Text>
-                                      <Code fz="xs" c="dimmed" style={{ marginLeft: "auto" }}>
-                                        {gd ? `gd:${gd}  ` : ""}
-                                        {chain}
-                                      </Code>
-                                    </Group>
-                                  </UnstyledButton>
-                                ) : (
-                                  <Group gap="xs" wrap="nowrap" style={{ flex: 1 }}>
-                                    <Text fz="sm" ff="var(--mantine-font-family-monospace)" style={{ flex: 1 }}>
-                                      {evt.message}
-                                    </Text>
-                                    <Code fz="xs" c="dimmed">
-                                      {chain}
-                                    </Code>
-                                  </Group>
-                                )}
-                              </Group>
-                              {Array.isArray(evt.fp) ? (
-                                <Box style={{ paddingLeft: indent + 128, marginTop: 6 }}>
-                                  <Fingerprint fp={evt.fp} />
-                                </Box>
-                              ) : null}
-                              {evt.data ? (
-                                <Text
-                                  mt={4}
-                                  fz="xs"
-                                  c="dimmed"
-                                  ff="var(--mantine-font-family-monospace)"
-                                  style={{ overflowWrap: "anywhere", paddingLeft: indent + 128 }}
-                                >
-                                  {formatData(evt.data)}
-                                </Text>
-                              ) : null}
-                            </Box>
-                          );
-                        })}
-                        <div ref={logEndRef} />
-                      </Stack>
-                    </ScrollArea>
-                  </Paper>
-                </SimpleGrid>
-              </Stack>
-            </Paper>
+            <StreamingPanels
+              formulaMarkdown={formulaMarkdown}
+              formulaParams={formulaParams}
+              scienceMarkdown={scienceMarkdown}
+              lunarMarkdown={lunarMarkdown}
+            />
           ) : null}
 
           {phase === "result" && result ? (
-            <Paper withBorder radius="lg" p="xl" bg="rgba(0,0,0,0.45)" className="gua-panel">
-              <Stack gap="xl">
-                <Stack gap={8}>
-                  <Text fw={600} ff="ui-serif, STKaiti, KaiTi, Songti SC, serif" style={{ letterSpacing: "0.18em" }}>
-                    最终判词
-                  </Text>
-                  <Divider opacity={0.2} />
-                  <Title
-                    order={2}
-                    className="gua-glitch"
-                    data-text={result.verdict}
-                    ff="ui-serif, STKaiti, KaiTi, Songti SC, serif"
-                    fw={700}
-                    style={{ letterSpacing: "0.08em" }}
-                  >
-                    {result.verdict}
-                  </Title>
-                </Stack>
-
-                <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="lg">
-                  <Paper withBorder radius="md" p="md" bg="rgba(0,0,0,0.35)">
-                    <Group justify="space-between" align="baseline">
-                      <Text fw={600} ff="ui-serif, STKaiti, KaiTi, Songti SC, serif" style={{ letterSpacing: "0.14em" }}>
-                        玄学评分
-                      </Text>
-                      <Text fz="xs" c="dimmed" ff="var(--mantine-font-family-monospace)">
-                        / 100
-                      </Text>
-                    </Group>
-                    <Group gap="sm" mt="sm" align="flex-end">
-                      <Title order={3} ff="var(--mantine-font-family-monospace)" fw={700}>
-                        {result.score}
-                      </Title>
-                    </Group>
-                    <Progress
-                      value={result.score}
-                      radius="xl"
-                      mt="md"
-                      color="gray"
-                      styles={{
-                        root: { background: "rgba(255,255,255,0.06)" },
-                      }}
-                    />
-                  </Paper>
-
-                  <Paper withBorder radius="md" p="md" bg="rgba(0,0,0,0.35)">
-                    <Text fw={600} ff="ui-serif, STKaiti, KaiTi, Songti SC, serif" style={{ letterSpacing: "0.14em" }}>
-                      偈语 / 签文
-                    </Text>
-                    <Text mt="sm" lh={1.9} ff="ui-serif, STKaiti, KaiTi, Songti SC, serif">
-                      {result.poem}
-                    </Text>
-                    <Text mt="md" fz="xs" c="dimmed" ff="var(--mantine-font-family-monospace)">
-                      {result.carry.hexagram.upper}上{result.carry.hexagram.lower}下 · {result.carry.hexagram.name}
-                    </Text>
-                  </Paper>
-                </SimpleGrid>
-
-                <Button fullWidth radius="xl" size="md" onClick={onReset} variant="default">
-                  再卜一次
-                </Button>
-              </Stack>
-            </Paper>
+            <Stack gap="lg">
+              <StreamingPanels
+                formulaMarkdown={formulaMarkdown}
+                formulaParams={formulaParams}
+                scienceMarkdown={scienceMarkdown}
+                lunarMarkdown={lunarMarkdown}
+              />
+              <Button fullWidth radius="xl" size="md" onClick={onReset} variant="default">
+                再卜一次
+              </Button>
+            </Stack>
           ) : null}
 
-          <Text ta="center" fz="xs" c="dimmed">
+          <Text ta="center" fz="xs" className="gua-footer">
             本项目仅供娱乐与传统文化研究，切勿迷信。
           </Text>
         </Stack>
@@ -552,43 +328,142 @@ export default function CyberGuaApp() {
   );
 }
 
-function formatData(data: Record<string, string | number>) {
+function buildFormulaMarkdown(
+  data: ReturnType<typeof buildFormulaData> | null,
+  traceVisible: number,
+  traceTotal: number,
+  phase: Phase,
+) {
+  if (!data) return ["", "", "$$", "\\square", "$$"].join("\n");
+  const stepIndex =
+    traceTotal > 0 ? Math.min(data.steps.length - 1, Math.floor((traceVisible / traceTotal) * data.steps.length)) : 0;
+  const rawLatex = phase === "computing" ? data.steps[Math.max(0, stepIndex)] ?? data.latex : data.latex;
+  const latex = phase === "computing" ? maskNumbers(rawLatex) : rawLatex;
+  return ["", "", "$$", latex, "$$"].join("\n");
+}
+
+function maskNumbers(latex: string) {
+  let index = 0;
+  return latex.replace(/\d+(\.\d+)?/g, () => {
+    index += 1;
+    return `c_{${index}}`;
+  });
+}
+
+function buildScienceMarkdown(events: DivinationTraceEvent[]) {
+  if (events.length === 0) {
+    return "## 现代块\n\n等待推演信号...";
+  }
+  const lines: string[] = ["", ""];
+  let currentPhase = "";
+  for (const evt of events) {
+    if (evt.phase !== currentPhase) {
+      currentPhase = evt.phase;
+      lines.push(`### ${currentPhase}`);
+    }
+    const data = evt.data ? formatEventData(evt.data) : "";
+    if (evt.kind === "group_start") {
+      lines.push(`- **${evt.message}**${data}`);
+    } else if (evt.kind === "event") {
+      lines.push(`- ${evt.message}${data}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+function formatEventData(data: Record<string, string | number>) {
   const keys = Object.keys(data);
+  if (keys.length === 0) return "";
   const ordered = keys.sort((a, b) => a.localeCompare(b));
-  return ordered
-    .map((k) => `${k}=${String(data[k])}`)
-    .join("  ");
+  const payload = ordered.map((k) => `${k}=${String(data[k])}`).join(" · ");
+  return ` \`${payload}\``;
 }
 
-function formatTime(ms: number) {
-  return `+${(ms / 1000).toFixed(3)}s`;
+function buildLunarLines(date: Date) {
+  const lunar = Lunar.fromDate(date) as unknown as Record<string, unknown>;
+  const lines: string[] = ["", ""];
+  lines.push(...collectNoArgMethods(lunar, "Lunar"));
+  const solar = safeCall(lunar, "getSolar");
+  if (solar) {
+    lines.push("", "### Solar");
+    lines.push(...collectNoArgMethods(solar, "Solar"));
+  }
+  const lunarYear = safeCall(lunar, "getYear");
+  if (lunarYear) {
+    lines.push("", "### LunarYear");
+    lines.push(...collectNoArgMethods(lunarYear, "LunarYear"));
+  }
+  const lunarMonth = safeCall(lunar, "getMonth");
+  if (lunarMonth) {
+    lines.push("", "### LunarMonth");
+    lines.push(...collectNoArgMethods(lunarMonth, "LunarMonth"));
+  }
+  const lunarDay = safeCall(lunar, "getDay");
+  if (lunarDay) {
+    lines.push("", "### LunarDay");
+    lines.push(...collectNoArgMethods(lunarDay, "LunarDay"));
+  }
+  const lunarTime = safeCall(lunar, "getTime");
+  if (lunarTime) {
+    lines.push("", "### LunarTime");
+    lines.push(...collectNoArgMethods(lunarTime, "LunarTime"));
+  }
+  return lines;
 }
 
-function shortHash(hex: string) {
-  if (!hex) return "--------";
-  return hex.slice(0, 6);
+function streamLines(lines: string[], traceVisible: number, traceTotal: number, phase: Phase) {
+  if (phase === "result") return lines.join("\n");
+  if (lines.length === 0) return "";
+  const ratio = traceTotal > 0 ? traceVisible / traceTotal : 0;
+  const count = Math.max(1, Math.floor(lines.length * ratio));
+  return lines.slice(0, count).join("\n");
 }
 
-function Fingerprint({ fp }: { fp: number[] }) {
-  const v = fp.slice(0, 8);
-  return (
-    <Group gap={3} wrap="nowrap" align="flex-end">
-      {v.map((x, i) => {
-        const h = 4 + Math.round(x * 12);
-        const o = 0.18 + x * 0.72;
-        return (
-          <Box
-            key={i}
-            style={{
-              width: 10,
-              height: h,
-              borderRadius: 2,
-              background: `rgba(255,255,255,${o})`,
-              boxShadow: x > 0.75 ? "0 0 10px rgba(255,255,255,0.08)" : undefined,
-            }}
-          />
-        );
-      })}
-    </Group>
-  );
+function collectNoArgMethods(target: Record<string, unknown>, title: string) {
+  const lines: string[] = [];
+  const proto = Object.getPrototypeOf(target);
+  const keys = new Set<string>([
+    ...Object.keys(target),
+    ...(proto ? Object.getOwnPropertyNames(proto) : []),
+  ]);
+  lines.push(`### ${title}`);
+  for (const key of Array.from(keys).sort((a, b) => a.localeCompare(b))) {
+    if (key === "constructor") continue;
+    if (key.startsWith("_")) continue;
+    const value = (target as Record<string, unknown>)[key];
+    if (typeof value !== "function") continue;
+    if (value.length > 0) continue;
+    const out = safeCall(target, key);
+    if (out === undefined || out === null) continue;
+    const rendered = formatValue(out);
+    if (!rendered) continue;
+    lines.push(`- **${key}**: ${rendered}`);
+  }
+  return lines;
+}
+
+function safeCall(target: Record<string, unknown>, key: string) {
+  const fn = target[key];
+  if (typeof fn !== "function") return null;
+  try {
+    return fn.call(target);
+  } catch {
+    return null;
+  }
+}
+
+function formatValue(value: unknown) {
+  if (typeof value === "string") return `\`${value}\``;
+  if (typeof value === "number" || typeof value === "boolean") return `\`${String(value)}\``;
+  if (value instanceof Date) return `\`${value.toISOString()}\``;
+  if (typeof value === "object" && value) {
+    try {
+      const json = JSON.stringify(value);
+      if (!json) return "";
+      return `\`${json.length > 160 ? `${json.slice(0, 160)}…` : json}\``;
+    } catch {
+      return `\`${String(value)}\``;
+    }
+  }
+  return "";
 }
