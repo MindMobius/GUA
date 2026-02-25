@@ -104,12 +104,51 @@ body {
 }
 
 .gua-mark {
-  letter-spacing: 0.42em;
-  padding-left: 0.42em;
-  color: var(--ink);
-  border-color: var(--line-strong);
-  background: rgba(255, 255, 255, 0.7);
-  box-shadow: 0 6px 16px rgba(20, 24, 28, 0.08);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 14px;
+  border: 1px solid rgba(27, 31, 36, 0.22);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.86), rgba(244, 246, 249, 0.62)),
+    radial-gradient(160px 90px at 24% 18%, rgba(255, 255, 255, 0.88), transparent 70%);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.52) inset,
+    0 12px 28px rgba(20, 24, 28, 0.1);
+  position: relative;
+  overflow: hidden;
+  border-radius: 12px;
+  clip-path: polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px);
+}
+
+.gua-mark::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(0deg, rgba(27, 31, 36, 0.04), rgba(27, 31, 36, 0.04) 1px, transparent 1px, transparent 10px),
+    linear-gradient(90deg, rgba(27, 31, 36, 0.08), transparent 35%, transparent 65%, rgba(27, 31, 36, 0.08));
+  opacity: 0.55;
+}
+
+.gua-mark::after {
+  content: "";
+  position: absolute;
+  inset: 8px;
+  pointer-events: none;
+  border: 1px solid rgba(27, 31, 36, 0.12);
+  border-radius: 10px;
+  clip-path: polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px);
+}
+
+.gua-mark-svg {
+  height: 36px;
+  width: auto;
+  display: block;
+  filter: drop-shadow(0 10px 18px rgba(20, 24, 28, 0.12));
+  position: relative;
+  z-index: 1;
 }
 
 .gua-hero {
@@ -133,6 +172,18 @@ body {
 .gua-phase-labels {
   text-transform: uppercase;
   letter-spacing: 0.18em;
+}
+
+.gua-phase-tab {
+  flex: 1;
+  cursor: pointer;
+  text-align: center;
+}
+
+.gua-phase-tab:focus-visible {
+  outline: 2px solid var(--accent-soft);
+  outline-offset: 4px;
+  border-radius: 999px;
 }
 
 .gua-phase-active {
@@ -191,6 +242,10 @@ body {
 
 .gua-input-actions {
   margin-top: 6px;
+}
+
+.gua-controls {
+  margin-top: -8px;
 }
 
 .gua-progress {
@@ -389,11 +444,41 @@ body {
   padding-right: 6px;
 }
 
+.gua-top-grid {
+  align-items: stretch;
+}
+
+.gua-formula-compact .gua-formula-fit {
+  max-height: 180px;
+}
+
+.gua-params-compact .gua-param-table {
+  max-height: 240px;
+  overflow: auto;
+}
+
+.gua-params-modal {
+  max-height: min(70vh, 720px);
+  overflow: auto;
+}
+
+.gua-process-grid .gua-section-title {
+  letter-spacing: 0.16em;
+}
+
+.gua-process-body {
+  max-height: 520px;
+}
+
 .gua-formula-panel {
   cursor: pointer;
 }
 
 .gua-formula-fit {
+  overflow: hidden;
+}
+
+.gua-formula-fit .katex-display {
   overflow: hidden;
 }
 

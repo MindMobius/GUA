@@ -6,16 +6,24 @@ import { MarkdownStream } from "@/components/MarkdownStream";
 import type { FormulaParam } from "@/utils/formulaEngine";
 
 type StreamingPanelsProps = {
+  mode?: "full" | "resultOnly";
   formulaMarkdown: string;
   formulaParams?: FormulaParam[];
   scienceMarkdown: string;
   lunarMarkdown: string;
 };
 
-export function StreamingPanels({ formulaMarkdown, formulaParams, scienceMarkdown, lunarMarkdown }: StreamingPanelsProps) {
+export function StreamingPanels({
+  mode = "full",
+  formulaMarkdown,
+  formulaParams,
+  scienceMarkdown,
+  lunarMarkdown,
+}: StreamingPanelsProps) {
   const [scienceAuto, setScienceAuto] = useState(true);
   const [lunarAuto, setLunarAuto] = useState(true);
   const [formulaOpen, setFormulaOpen] = useState(false);
+  const [paramsOpen, setParamsOpen] = useState(false);
 
   const formulaRef = useRef<HTMLDivElement | null>(null);
   const scienceRef = useRef<HTMLDivElement | null>(null);
@@ -91,14 +99,26 @@ export function StreamingPanels({ formulaMarkdown, formulaParams, scienceMarkdow
       <Paper
         radius="md"
         p="xl"
-        className="gua-panel gua-panel-strong gua-stream-panel gua-formula-panel"
+        className={`gua-panel gua-panel-strong gua-stream-panel gua-formula-panel ${mode === "full" ? "gua-formula-compact" : ""}`}
         onClick={() => setFormulaOpen(true)}
       >
         <Group justify="space-between" align="center" className="gua-stream-header">
           <Text fw={600} className="gua-section-title">
-            公式块
+            {mode === "resultOnly" ? "结果块" : "公式块"}
           </Text>
           <Group gap="xs">
+            {mode === "full" && formulaParams && formulaParams.length > 0 ? (
+              <Button
+                size="xs"
+                variant="default"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setParamsOpen(true);
+                }}
+              >
+                参数
+              </Button>
+            ) : null}
             <Button
               size="xs"
               variant="default"
@@ -111,91 +131,95 @@ export function StreamingPanels({ formulaMarkdown, formulaParams, scienceMarkdow
             </Button>
           </Group>
         </Group>
-        <div
-          ref={formulaRef}
-          className="gua-stream-body gua-stream-formula gua-formula-fit"
-        >
+        <div ref={formulaRef} className="gua-stream-body gua-stream-formula gua-formula-fit">
           <MarkdownStream content={formulaMarkdown} className="gua-stream-body-inner" />
         </div>
       </Paper>
 
-      {formulaParams && formulaParams.length > 0 ? (
-        <Paper radius="md" p="xl" className="gua-panel gua-panel-soft gua-stream-panel">
-          <Group justify="space-between" align="center" className="gua-stream-header">
-            <Text fw={600} className="gua-section-title">
-              参数块
-            </Text>
-          </Group>
-          <div className="gua-param-table">
-            <div className="gua-param-head">
-              <Text fz="xs" className="gua-param-head-cell">
-                中文释义
+      {mode === "full" ? (
+        <SimpleGrid cols={{ base: 1, md: 2 }} spacing="lg" className="gua-process-grid">
+          <Paper radius="md" p="xl" className="gua-panel gua-panel-soft gua-stream-panel gua-panel-traditional">
+            <Group justify="space-between" align="center" className="gua-stream-header">
+              <Text fw={600} className="gua-section-title">
+                传统块
               </Text>
-              <Text fz="xs" className="gua-param-head-cell">
-                符号
-              </Text>
-              <Text fz="xs" className="gua-param-head-cell">
-                值
-              </Text>
+              <Button
+                size="xs"
+                variant={lunarAuto ? "filled" : "default"}
+                onClick={() => toggleAuto(lunarAuto, setLunarAuto, lunarRef, lunarProgrammatic)}
+              >
+                {lunarAuto ? "滚屏开" : "滚屏关"}
+              </Button>
+            </Group>
+            <div
+              ref={lunarRef}
+              className="gua-stream-body gua-scroll-body gua-process-body"
+              onScroll={(e) => handleUserScroll(e.currentTarget, lunarAuto, setLunarAuto, lunarProgrammatic)}
+            >
+              <MarkdownStream content={lunarMarkdown} className="gua-stream-body-inner" />
             </div>
-            {formulaParams.map((item) => (
-              <div key={item.key} className="gua-param-row">
-                <Text className="gua-param-meaning">{item.desc}</Text>
-                <div className="gua-param-math">
-                  <MarkdownStream content={`$${item.latex}$`} />
-                </div>
-                <div className="gua-param-math gua-param-math-value">
-                  <MarkdownStream content={`$${item.value}$`} />
-                </div>
-              </div>
-            ))}
-          </div>
-        </Paper>
+          </Paper>
+
+          <Paper radius="md" p="xl" className="gua-panel gua-panel-soft gua-stream-panel gua-panel-modern">
+            <Group justify="space-between" align="center" className="gua-stream-header">
+              <Text fw={600} className="gua-section-title">
+                现代块
+              </Text>
+              <Button
+                size="xs"
+                variant={scienceAuto ? "filled" : "default"}
+                onClick={() => toggleAuto(scienceAuto, setScienceAuto, scienceRef, scienceProgrammatic)}
+              >
+                {scienceAuto ? "滚屏开" : "滚屏关"}
+              </Button>
+            </Group>
+            <div
+              ref={scienceRef}
+              className="gua-stream-body gua-scroll-body gua-process-body"
+              onScroll={(e) => handleUserScroll(e.currentTarget, scienceAuto, setScienceAuto, scienceProgrammatic)}
+            >
+              <MarkdownStream content={scienceMarkdown} className="gua-stream-body-inner" />
+            </div>
+          </Paper>
+        </SimpleGrid>
       ) : null}
-
-      <SimpleGrid cols={{ base: 1, md: 2 }} spacing="lg">
-        <Paper radius="md" p="xl" className="gua-panel gua-panel-soft gua-stream-panel gua-panel-traditional">
-          <Group justify="space-between" align="center" className="gua-stream-header">
-            <Text fw={600} className="gua-section-title">
-              传统块
-            </Text>
-            <Button size="xs" variant={lunarAuto ? "filled" : "default"} onClick={() => toggleAuto(lunarAuto, setLunarAuto, lunarRef, lunarProgrammatic)}>
-              {lunarAuto ? "滚屏开" : "滚屏关"}
-            </Button>
-          </Group>
-          <div
-            ref={lunarRef}
-            className="gua-stream-body gua-scroll-body"
-            onScroll={(e) => handleUserScroll(e.currentTarget, lunarAuto, setLunarAuto, lunarProgrammatic)}
-          >
-            <MarkdownStream content={lunarMarkdown} className="gua-stream-body-inner" />
-          </div>
-        </Paper>
-
-        <Paper radius="md" p="xl" className="gua-panel gua-panel-soft gua-stream-panel gua-panel-modern">
-          <Group justify="space-between" align="center" className="gua-stream-header">
-            <Text fw={600} className="gua-section-title">
-              现代块
-            </Text>
-            <Button size="xs" variant={scienceAuto ? "filled" : "default"} onClick={() => toggleAuto(scienceAuto, setScienceAuto, scienceRef, scienceProgrammatic)}>
-              {scienceAuto ? "滚屏开" : "滚屏关"}
-            </Button>
-          </Group>
-          <div
-            ref={scienceRef}
-            className="gua-stream-body gua-scroll-body"
-            onScroll={(e) => handleUserScroll(e.currentTarget, scienceAuto, setScienceAuto, scienceProgrammatic)}
-          >
-            <MarkdownStream content={scienceMarkdown} className="gua-stream-body-inner" />
-          </div>
-        </Paper>
-      </SimpleGrid>
 
       <Modal opened={formulaOpen} onClose={() => setFormulaOpen(false)} size="calc(100vw - 96px)" centered>
         <div ref={formulaModalRef} className="gua-formula-modal gua-formula-fit">
           <MarkdownStream content={formulaMarkdown} className="gua-stream-body-inner gua-stream-formula" />
         </div>
       </Modal>
+
+      {mode === "full" && formulaParams && formulaParams.length > 0 ? (
+        <Modal opened={paramsOpen} onClose={() => setParamsOpen(false)} size="lg" centered>
+          <div className="gua-params-modal">
+            <div className="gua-param-table">
+              <div className="gua-param-head">
+                <Text fz="xs" className="gua-param-head-cell">
+                  中文释义
+                </Text>
+                <Text fz="xs" className="gua-param-head-cell">
+                  符号
+                </Text>
+                <Text fz="xs" className="gua-param-head-cell">
+                  值
+                </Text>
+              </div>
+              {formulaParams.map((item) => (
+                <div key={item.key} className="gua-param-row">
+                  <Text className="gua-param-meaning">{item.desc}</Text>
+                  <div className="gua-param-math">
+                    <MarkdownStream content={`$${item.latex}$`} />
+                  </div>
+                  <div className="gua-param-math gua-param-math-value">
+                    <MarkdownStream content={`$${item.value}$`} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </Modal>
+      ) : null}
     </Stack>
   );
 }
@@ -247,14 +271,14 @@ function scaleFormula(container: HTMLDivElement | null) {
   if (!display) return;
   display.style.transform = "";
   display.style.transformOrigin = "left top";
-  const availableW = container.clientWidth;
-  const availableH = container.clientHeight;
+  const availableW = Math.max(0, container.clientWidth - 12);
+  const availableH = Math.max(0, container.clientHeight - 8);
   const width = display.scrollWidth;
   const height = display.scrollHeight;
   if (availableW <= 0 || width <= 0) return;
   const scaleW = availableW / width;
   const scaleH = availableH > 0 && height > 0 ? availableH / height : 1;
-  const scale = Math.min(1, scaleW, scaleH);
+  const scale = Math.min(1, scaleW, scaleH) * 0.97;
   display.style.transform = `scale(${scale})`;
   display.style.width = `${width}px`;
 }

@@ -84,9 +84,8 @@ export function buildFormulaData(seed: number, phaseTerms: string[]): FormulaDat
 
   const core = nodes[0] ?? { type: "var", name: "Q" };
   const omega = params.find((item) => item.key === "Ω");
-  if (omega) {
-    omega.value = formatValue(rng);
-  }
+  const omegaValue = computeOmega(core, params);
+  if (omega) omega.value = omegaValue;
   const latexCore = render(core);
   const latex = `\\Omega = ${latexCore}`;
   const depth = nodeDepth(core);
@@ -97,6 +96,97 @@ export function buildFormulaData(seed: number, phaseTerms: string[]): FormulaDat
   });
 
   return { latex, steps, params };
+}
+
+function computeOmega(core: Node, params: FormulaParam[]) {
+  const varMap = new Map<string, number>();
+  for (const p of params) {
+    if (p.key === "Ω") continue;
+    if (p.key === "σ") continue;
+    const v = parseLatexValue(p.value);
+    varMap.set(p.latex, v);
+  }
+  const value = evalNode(core, varMap);
+  return formatComputedLatex(value);
+}
+
+function evalNode(node: Node, varMap: Map<string, number>): number {
+  switch (node.type) {
+    case "var":
+      return varMap.get(node.name) ?? NaN;
+    case "const":
+      return parseFloat(node.value);
+    case "op": {
+      const left = evalNode(node.left, varMap);
+      const right = evalNode(node.right, varMap);
+      if (node.op === "+") return left + right;
+      if (node.op === "-") return left - right;
+      return left * right;
+    }
+    case "frac": {
+      const num = evalNode(node.num, varMap);
+      const den = evalNode(node.den, varMap);
+      return num / den;
+    }
+    case "pow": {
+      const base = evalNode(node.base, varMap);
+      const exp = evalNode(node.exp, varMap);
+      return Math.pow(base, exp);
+    }
+    case "func": {
+      const arg = evalNode(node.arg, varMap);
+      if (node.name === "\\log") return Math.log(arg);
+      if (node.name === "\\exp") return Math.exp(arg);
+      if (node.name === "\\sin") return Math.sin(arg);
+      if (node.name === "\\cos") return Math.cos(arg);
+      return Math.tanh(arg);
+    }
+    default:
+      return NaN;
+  }
+}
+
+function parseLatexValue(value: string): number {
+  const trimmed = value.trim();
+  if (trimmed === "\\pi") return Math.PI;
+  if (trimmed === "e") return Math.E;
+  if (trimmed === "\\infty") return Number.POSITIVE_INFINITY;
+  if (trimmed === "\\lim_{x \\to 0} \\frac{\\sin x}{x}") return 1;
+
+  const frac = trimmed.match(/^\\frac\{(\d+)\}\{(\d+)\}$/);
+  if (frac) {
+    const num = parseFloat(frac[1] ?? "");
+    const den = parseFloat(frac[2] ?? "");
+    return num / den;
+  }
+
+  const sqrt = trimmed.match(/^\\sqrt\{(\d+)\}$/);
+  if (sqrt) {
+    const n = parseFloat(sqrt[1] ?? "");
+    return Math.sqrt(n);
+  }
+
+  const square = trimmed.match(/^\\left\((\d+)\\right\)\^\{2\}$/);
+  if (square) {
+    const n = parseFloat(square[1] ?? "");
+    return n * n;
+  }
+
+  const num = Number.parseFloat(trimmed);
+  if (!Number.isNaN(num)) return num;
+  return NaN;
+}
+
+function formatComputedLatex(value: number) {
+  if (!Number.isFinite(value)) return "\\infty";
+  if (Number.isNaN(value)) return "\\square";
+  const abs = Math.abs(value);
+  if (abs !== 0 && (abs >= 100000 || abs < 0.0001)) {
+    const exp = Math.floor(Math.log10(abs));
+    const mantissa = value / Math.pow(10, exp);
+    return `${mantissa.toFixed(4)}\\times 10^{${exp}}`;
+  }
+  return value.toFixed(4).replace(/\.?0+$/, "");
 }
 
 function render(node: Node, limit?: number, depth = 1): string {

@@ -2,12 +2,14 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActionIcon,
   Alert,
   Badge,
   Box,
   Button,
   Container,
   Group,
+  Modal,
   Paper,
   SimpleGrid,
   Stack,
@@ -15,12 +17,14 @@ import {
   TextInput,
   Textarea,
   Title,
+  UnstyledButton,
 } from "@mantine/core";
 import { Lunar } from "lunar-javascript";
 import { StreamingPanels } from "@/components/StreamingPanels";
+import { MarkdownStream } from "@/components/MarkdownStream";
 import type { DivinationResult, DivinationTraceEvent } from "@/utils/divinationEngine";
 import { divineWithTrace } from "@/utils/divinationEngine";
-import { buildFormulaData } from "@/utils/formulaEngine";
+import { buildFormulaData, type FormulaParam } from "@/utils/formulaEngine";
 
 type Phase = "input" | "computing" | "result";
 
@@ -48,7 +52,10 @@ function mix32(seed: number, n: number) {
 }
 
 export default function CyberGuaApp() {
-  const [phase, setPhase] = useState<Phase>("input");
+  const [runPhase, setRunPhase] = useState<Phase>("input");
+  const [activeTab, setActiveTab] = useState<Phase>("input");
+  const [isRunning, setIsRunning] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
   const [question, setQuestion] = useState("");
   const [nickname, setNickname] = useState("");
 
@@ -109,14 +116,17 @@ export default function CyberGuaApp() {
       return;
     }
 
+    runIdRef.current += 1;
+    const runId = runIdRef.current;
     setError(null);
-    setPhase("computing");
+    setIsRunning(true);
+    setRunPhase("computing");
+    setActiveTab("computing");
     const entropy = (entropyRef.current.seed ^ Date.now()) >>> 0;
+    setResult(null);
     setTrace([]);
     setTraceVisible(0);
     setFormulaSeed(entropy);
-
-    const runId = (runIdRef.current += 1);
     try {
       const { result: res, trace: steps } = await Promise.resolve().then(() =>
         divineWithTrace(
@@ -147,11 +157,22 @@ export default function CyberGuaApp() {
       await sleep(260);
 
       setResult(res);
-      setPhase("result");
+      setRunPhase("result");
+      setIsRunning(false);
+      setActiveTab("result");
     } catch (e) {
       setError(e instanceof Error ? e.message : "推演失败，请重试。");
-      setPhase("input");
+      setIsRunning(false);
+      setRunPhase("input");
+      setActiveTab("input");
+      setFormulaSeed(null);
     }
+  };
+
+  const onTerminate = () => {
+    if (!isRunning) return;
+    runIdRef.current += 1;
+    setIsRunning(false);
   };
 
   const onReset = () => {
@@ -163,11 +184,13 @@ export default function CyberGuaApp() {
     setQuestion("");
     setNickname("");
     setDatetimeValue(toDatetimeLocalValue(new Date()));
-    setPhase("input");
+    setRunPhase("input");
+    setActiveTab("input");
     setFormulaSeed(null);
+    setIsRunning(false);
   };
 
-  const canStart = question.trim().length > 0 && phase === "input";
+  const canStart = question.trim().length > 0;
   const shortcutHint = "Ctrl/⌘ + Enter";
 
   const phaseTerms = useMemo(() => {
@@ -179,58 +202,155 @@ export default function CyberGuaApp() {
     return buildFormulaData(formulaSeed, phaseTerms);
   }, [formulaSeed, phaseTerms]);
   const formulaMarkdown = useMemo(() => {
-    return buildFormulaMarkdown(formulaData, traceVisible, trace.length, phase);
-  }, [formulaData, traceVisible, trace.length, phase]);
+    return buildFormulaMarkdown(formulaData, traceVisible, trace.length, runPhase);
+  }, [formulaData, traceVisible, trace.length, runPhase]);
   const formulaParams = useMemo(() => {
-    if (phase !== "result") return [];
     return formulaData?.params ?? [];
-  }, [formulaData, phase]);
+  }, [formulaData]);
+  const progressiveParams = useMemo(() => {
+    return buildProgressiveParams(formulaParams, runPhase, traceVisible, trace.length);
+  }, [formulaParams, runPhase, traceVisible, trace.length]);
+  const resultMarkdown = useMemo(() => {
+    const latex = buildResultLatex(formulaData);
+    if (!latex) return ["", "", "$$", "\\square", "$$"].join("\n");
+    return ["", "", "$$", latex, "$$"].join("\n");
+  }, [formulaData]);
   const scienceMarkdown = useMemo(() => {
-    const slice = phase === "result" ? trace : trace.slice(0, traceVisible);
+    const slice = runPhase === "result" ? trace : trace.slice(0, traceVisible);
     return buildScienceMarkdown(slice);
-  }, [phase, trace, traceVisible]);
+  }, [runPhase, trace, traceVisible]);
   const lunarLines = useMemo(() => buildLunarLines(datetime), [datetime]);
   const lunarMarkdown = useMemo(() => {
-    return streamLines(lunarLines, traceVisible, trace.length, phase);
-  }, [lunarLines, traceVisible, trace.length, phase]);
+    return streamLines(lunarLines, traceVisible, trace.length, runPhase);
+  }, [lunarLines, traceVisible, trace.length, runPhase]);
   const phaseLabels = ["输入", "推演", "归一"];
-  const phaseIndex = phase === "input" ? 0 : phase === "computing" ? 1 : 2;
+  const phaseIndex = activeTab === "input" ? 0 : activeTab === "computing" ? 1 : 2;
 
   return (
     <Box className="gua-bg" mih="100dvh">
       <Container size="sm" py={64}>
         <Stack gap={32}>
           <Stack gap={10} align="center" className="gua-hero">
-            <Badge variant="outline" color="gray" radius="xl" size="lg" className="gua-mark">
-              GUA
-            </Badge>
-            <Title order={1} className="gua-title" fw={600}>
-              赛博算卦
-            </Title>
+            <div className="gua-mark" aria-label="GUA">
+              <svg viewBox="0 0 180 48" role="img" aria-label="GUA" className="gua-mark-svg">
+                <path
+                  d="M38 12.8c-6.9 0-12.5 5.6-12.5 12.5S31.1 37.8 38 37.8c3.7 0 7.1-1.6 9.4-4.2v-8.4H37.2v-4.8H52.2v15.8c-3.6 4.3-8.9 7-14.2 7-9.6 0-17.5-7.9-17.5-17.5S28.4 7.8 38 7.8c5.1 0 9.9 2.2 13.3 5.8l-3.6 3.2c-2.4-2.6-5.8-4-9.7-4Z"
+                  fill="none"
+                  stroke="rgba(15, 23, 42, 0.92)"
+                  strokeWidth="3.2"
+                  strokeLinejoin="miter"
+                />
+                <path
+                  d="M73 9.8v20.9c0 4.5 3.1 7.5 7.9 7.5s7.9-3 7.9-7.5V9.8h5v21.3c0 7.3-5.2 12.1-12.9 12.1S68 38.4 68 31.1V9.8h5Z"
+                  fill="none"
+                  stroke="rgba(15, 23, 42, 0.92)"
+                  strokeWidth="3.2"
+                  strokeLinejoin="miter"
+                />
+                <path
+                  d="M126.6 9.8h5.7l13 33h-5.4l-3.2-8.3h-14.5l-3.2 8.3h-5.4l13-33Zm-2.7 20h10.9l-5.4-14.2-5.5 14.2Z"
+                  fill="none"
+                  stroke="rgba(15, 23, 42, 0.92)"
+                  strokeWidth="3.2"
+                  strokeLinejoin="miter"
+                />
+                <path
+                  d="M12 38.5h156"
+                  stroke="rgba(15, 23, 42, 0.28)"
+                  strokeWidth="1.2"
+                  strokeLinecap="round"
+                  strokeDasharray="2 6"
+                />
+              </svg>
+            </div>
+              <Group gap="xs" justify="center" align="center">
+                <Title order={1} className="gua-title" fw={600}>
+                  不确定性归一化装置
+                </Title>
+                <ActionIcon
+                  variant="subtle"
+                  color="gray"
+                  radius="xl"
+                  aria-label="算法说明"
+                  onClick={() => setAboutOpen(true)}
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path
+                      d="M12 17v-5.2c0-1.1.9-2 2-2h.2c.9 0 1.8-.7 1.8-1.6 0-1.1-1.1-2-2.4-2h-3.2C8.6 6.2 7 7.7 7 9.5"
+                      stroke="currentColor"
+                      strokeWidth="1.6"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                    <path
+                      d="M12 20.3a.8.8 0 1 0 0-1.6.8.8 0 0 0 0 1.6Z"
+                      fill="currentColor"
+                    />
+                    <path
+                      d="M12 22c5.5 0 10-4.5 10-10S17.5 2 12 2 2 6.5 2 12s4.5 10 10 10Z"
+                      stroke="currentColor"
+                      strokeWidth="1.6"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                </ActionIcon>
+              </Group>
             <Text fz="sm" className="gua-subtitle">
-              输入极简 · 过程极繁 · 输出极决
+              起卦不是迷信，是把“问”编码成扰动：同一输入同一输出，推演可追踪，归一可复算。
             </Text>
           </Stack>
 
           <Stack gap={8} className="gua-phase">
             <Group justify="space-between" className="gua-phase-labels">
-              {phaseLabels.map((label, index) => (
-                <Text key={label} fz="xs" className={index <= phaseIndex ? "gua-phase-active" : "gua-phase-idle"}>
-                  {label}
-                </Text>
-              ))}
+              {phaseLabels.map((label, index) => {
+                const value: Phase = index === 0 ? "input" : index === 1 ? "computing" : "result";
+                return (
+                  <UnstyledButton
+                    key={label}
+                    className="gua-phase-tab"
+                    onClick={() => setActiveTab(value)}
+                    aria-current={activeTab === value ? "page" : undefined}
+                  >
+                    <Text key={label} fz="xs" className={index === phaseIndex ? "gua-phase-active" : "gua-phase-idle"}>
+                      {label}
+                    </Text>
+                  </UnstyledButton>
+                );
+              })}
             </Group>
             <Box className="gua-stepper">
-              {phaseLabels.map((label, index) => (
-                <Box key={label} className={index <= phaseIndex ? "gua-step gua-step-active" : "gua-step"} />
-              ))}
+              {phaseLabels.map((label, index) => {
+                const value: Phase = index === 0 ? "input" : index === 1 ? "computing" : "result";
+                return (
+                  <UnstyledButton key={label} className="gua-phase-tab" onClick={() => setActiveTab(value)}>
+                    <Box className={index === phaseIndex ? "gua-step gua-step-active" : "gua-step"} />
+                  </UnstyledButton>
+                );
+              })}
             </Box>
             <Text fz="xs" className="gua-phase-current">
-              当前阶段 · {phaseLabels[phaseIndex]}
+              当前页面 · {phaseLabels[phaseIndex]}
             </Text>
           </Stack>
 
-          {phase === "input" ? (
+          <Group justify="space-between" align="center" className="gua-controls">
+            <Group gap="xs">
+              <Button radius="xl" variant="default" onClick={onTerminate} disabled={!isRunning}>
+                终止
+              </Button>
+              <Button radius="xl" variant="default" onClick={onReset}>
+                重置
+              </Button>
+            </Group>
+            <Group gap="xs">
+              <Button radius="xl" onClick={onStart} disabled={!canStart}>
+                {runPhase === "input" && trace.length === 0 && !result ? "起卦" : "再卜一次"}
+              </Button>
+            </Group>
+          </Group>
+
+          {activeTab === "input" ? (
             <Paper radius="md" p="xl" className="gua-panel">
               <Stack gap="md">
                 <Group justify="space-between" align="center">
@@ -241,7 +361,7 @@ export default function CyberGuaApp() {
                     步骤 1/3
                   </Badge>
                 </Group>
-                <Text className="gua-section-sub">写下所问之事，余者交给推演。结果只给一条公式。</Text>
+                <Text className="gua-section-sub">写下所问之事，余者交给推演。</Text>
 
                 <Textarea
                   label="所问之事"
@@ -254,11 +374,11 @@ export default function CyberGuaApp() {
                   maxLength={120}
                   description={
                     <Text component="span" fz="xs" className="gua-hint">
-                      {Math.min(120, question.length)}/120
+                      {Math.min(120, question.length)}/120 · {shortcutHint}
                     </Text>
                   }
                   onKeyDown={(e) => {
-                    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") onStart();
+                    if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && canStart) onStart();
                   }}
                 />
 
@@ -283,40 +403,58 @@ export default function CyberGuaApp() {
                     {error}
                   </Alert>
                 ) : null}
-
-                <Group justify="space-between" align="center" className="gua-input-actions">
-                  <Text fz="xs" className="gua-hint">
-                    {shortcutHint}
-                  </Text>
-                  <Button radius="xl" size="md" onClick={onStart} disabled={!canStart}>
-                    起卦
-                  </Button>
-                </Group>
               </Stack>
             </Paper>
           ) : null}
 
-          {phase === "computing" ? (
-            <StreamingPanels
-              formulaMarkdown={formulaMarkdown}
-              formulaParams={formulaParams}
-              scienceMarkdown={scienceMarkdown}
-              lunarMarkdown={lunarMarkdown}
-            />
-          ) : null}
-
-          {phase === "result" && result ? (
-            <Stack gap="lg">
+          {activeTab === "computing" ? (
+            trace.length > 0 || isRunning || formulaSeed !== null ? (
               <StreamingPanels
                 formulaMarkdown={formulaMarkdown}
-                formulaParams={formulaParams}
+                formulaParams={progressiveParams}
                 scienceMarkdown={scienceMarkdown}
                 lunarMarkdown={lunarMarkdown}
               />
-              <Button fullWidth radius="xl" size="md" onClick={onReset} variant="default">
-                再卜一次
-              </Button>
-            </Stack>
+            ) : (
+              <Paper radius="md" p="xl" className="gua-panel gua-panel-muted">
+                <Stack gap="sm">
+                  <Text fw={600} className="gua-section-title">
+                    暂无推演信息
+                  </Text>
+                  <Text className="gua-section-sub">请到「输入」页面起卦后，再来这里查看推演过程。</Text>
+                  <Group justify="flex-end">
+                    <Button radius="xl" variant="default" onClick={() => setActiveTab("input")}>
+                      去输入
+                    </Button>
+                  </Group>
+                </Stack>
+              </Paper>
+            )
+          ) : null}
+
+          {activeTab === "result" ? (
+            result && runPhase === "result" ? (
+              <StreamingPanels
+                mode="resultOnly"
+                formulaMarkdown={resultMarkdown}
+                scienceMarkdown=""
+                lunarMarkdown=""
+              />
+            ) : (
+              <Paper radius="md" p="xl" className="gua-panel gua-panel-muted">
+                <Stack gap="sm">
+                  <Text fw={600} className="gua-section-title">
+                    暂无归一结果
+                  </Text>
+                  <Text className="gua-section-sub">请到「推演」等待完成，或回到「输入」重新起卦。</Text>
+                  <Group justify="flex-end">
+                    <Button radius="xl" variant="default" onClick={() => setActiveTab(isRunning || trace.length > 0 ? "computing" : "input")}>
+                      {isRunning || trace.length > 0 ? "去推演" : "去输入"}
+                    </Button>
+                  </Group>
+                </Stack>
+              </Paper>
+            )
           ) : null}
 
           <Text ta="center" fz="xs" className="gua-footer">
@@ -324,6 +462,47 @@ export default function CyberGuaApp() {
           </Text>
         </Stack>
       </Container>
+
+      <Modal opened={aboutOpen} onClose={() => setAboutOpen(false)} size="lg" centered title="算法说明">
+        <MarkdownStream
+          content={[
+            "## 摘要",
+            "",
+            "本文描述一种面向卦问交互的确定性计算流程。系统以时间与输入扰动构造随机种子，生成可解释的符号参数集，并据此合成表达式结构；推演阶段对参数与结构进行分层揭示，归一阶段对表达式执行数值化求解，输出标量 $\\Omega$ 及其可复算的代入等式。",
+            "",
+            "## 1. 输入、观测与随机种子",
+            "",
+            "- 输入由卦问文本 $x$、起卦时间 $t$ 与交互扰动 $e$ 组成。",
+            "- 构造 32 位种子 $s = \\mathrm{mix}(t, x, e)$，其中 $\\mathrm{mix}$ 为可复算的整数散列混合。",
+            "- 该种子用于驱动伪随机数发生器 $r(s)$，保证确定性复现与对输入的灵敏响应。",
+            "",
+            "## 2. 参数化：不确定性的符号表示",
+            "",
+            "- 定义参数集 $\\Theta = \\{Q, T, N, \\epsilon, \\alpha, \\beta, \\gamma, \\Phi_1, \\dots, \\Phi_k\\}$。",
+            "- 参数值由 $r(s)$ 采样得到，允许闭式表达（分式、根式、常数与极限），并附带中文语义标签以保持可解释性。",
+            "",
+            "## 3. 结构生成：表达式树合成",
+            "",
+            "- 从参数节点与常数节点构造候选集合 $V$，通过随机合成规则生成表达式树 $f(\\cdot)$：",
+            "  - 二元算子：$+, -, \\cdot$",
+            "  - 分式：$\\frac{a}{b}$",
+            "  - 幂：$a^{b}$",
+            "  - 初等函数：$\\log, \\exp, \\sin, \\cos, \\tanh$",
+            "- 得到公式：$\\Omega = f(\\Theta)$。",
+            "",
+            "## 4. 推演阶段：分层揭示与过程记录",
+            "",
+            "- 传统块与现代块由同一事件序列驱动，分别提供叙述式与结构化视角。",
+            "- 设推演进度 $p\\in[0,1]$，参数揭示函数 $g(p)$ 决定在阶段 $p$ 已公开的参数子集，其余以 $\\square$ 占位。",
+            "",
+            "## 5. 归一阶段：数值化求解与可复算输出",
+            "",
+            "- 对参数闭式进行解析并数值化：$\\hat\\Theta = \\mathrm{eval}(\\Theta)$。",
+            "- 对表达式树执行递归求值，得到 $\\Omega = f(\\hat\\Theta)$。",
+            "- 最终以等式展示：将 $\\hat\\Theta$ 代入右侧表达式并给出“算式 = 结果”，保证同条件可复算。",
+          ].join("\n")}
+        />
+      </Modal>
     </Box>
   );
 }
@@ -340,6 +519,44 @@ function buildFormulaMarkdown(
   const rawLatex = phase === "computing" ? data.steps[Math.max(0, stepIndex)] ?? data.latex : data.latex;
   const latex = phase === "computing" ? maskNumbers(rawLatex) : rawLatex;
   return ["", "", "$$", latex, "$$"].join("\n");
+}
+
+function buildResultLatex(data: ReturnType<typeof buildFormulaData> | null) {
+  if (!data) return null;
+  const omega = data.params.find((p) => p.key === "Ω");
+  if (!omega?.value) return null;
+  const parts = data.latex.split("=");
+  const right = parts.slice(1).join("=").trim();
+  if (!right) return null;
+  let expr = right;
+  for (const param of data.params) {
+    if (!param.latex || !param.value) continue;
+    if (param.key === "Ω") continue;
+    const token = escapeRegExp(param.latex);
+    expr = expr.replace(new RegExp(token, "g"), `\\left(${param.value}\\right)`);
+  }
+  return `${expr} = ${omega.value}`;
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function buildProgressiveParams(params: FormulaParam[], phase: Phase, traceVisible: number, traceTotal: number) {
+  if (params.length === 0) return [];
+  if (phase === "result") return params;
+  const base = params.filter((p) => p.key !== "Ω");
+  const ratio = traceTotal > 0 ? traceVisible / traceTotal : 0;
+  const revealCount = Math.max(0, Math.min(base.length, Math.floor(ratio * base.length)));
+  let revealed = 0;
+  return params.map((p) => {
+    if (p.key === "Ω") return { ...p, value: "\\square" };
+    if (revealed < revealCount) {
+      revealed += 1;
+      return p;
+    }
+    return { ...p, value: "\\square" };
+  });
 }
 
 function maskNumbers(latex: string) {
