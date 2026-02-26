@@ -444,6 +444,19 @@ body {
   padding-right: 6px;
 }
 
+.gua-decode-body {
+  max-height: min(60vh, 560px);
+  overflow-y: auto;
+  padding-right: 6px;
+  padding-bottom: 4px;
+}
+
+.gua-decode-reasoning {
+  max-height: min(36vh, 340px);
+  overflow-y: auto;
+  padding-right: 6px;
+}
+
 .gua-top-grid {
   align-items: stretch;
 }
@@ -533,6 +546,47 @@ body {
   border: 1px solid rgba(27, 31, 36, 0.12);
   border-radius: 4px;
   padding: 0 4px;
+}
+
+.gua-stream-body .markstream-react pre {
+  background: rgba(27, 31, 36, 0.06);
+  border: 1px solid rgba(27, 31, 36, 0.12);
+  border-radius: 10px;
+  padding: 10px 12px;
+  overflow: auto;
+  margin: 10px 0;
+}
+
+.gua-stream-body .markstream-react pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+
+.gua-stream-body .markstream-react blockquote {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border-left: 3px solid rgba(27, 31, 36, 0.22);
+  background: rgba(27, 31, 36, 0.04);
+  border-radius: 10px;
+}
+
+.gua-stream-body .markstream-react table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 10px 0;
+}
+
+.gua-stream-body .markstream-react th,
+.gua-stream-body .markstream-react td {
+  border: 1px solid rgba(27, 31, 36, 0.12);
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.gua-stream-body .markstream-react th {
+  background: rgba(27, 31, 36, 0.04);
 }
 
 .gua-panel-traditional {

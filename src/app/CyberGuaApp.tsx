@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActionIcon,
   Alert,
@@ -24,20 +24,41 @@ import {
 import { Lunar } from "lunar-javascript";
 import { StreamingPanels } from "@/components/StreamingPanels";
 import { MarkdownStream } from "@/components/MarkdownStream";
+import { DecodePromptPanel } from "@/components/DecodePromptPanel";
+import { AiConfigModal } from "@/components/AiConfigModal";
+import { UniverseModelLibraryPanel } from "@/components/UniverseModelLibraryPanel";
+import type { UniverseModelV1 } from "@/types/universeModel";
 import type { DivinationExtras, DivinationResult, DivinationTraceEvent } from "@/utils/divinationEngine";
 import { divineWithTrace } from "@/utils/divinationEngine";
+import { streamDecode } from "@/utils/decodeLlmClient";
 import { buildFormulaData, type FormulaParam, type FormulaPolicy } from "@/utils/formulaEngine";
+import {
+  addUniverseModelItem,
+  deleteUniverseModelItem,
+  ensureUniverseModelLibrary,
+  loadUniverseModelLibrary,
+  makeLibraryId,
+  renameUniverseModelItem,
+  saveUniverseModelLibrary,
+  setActiveUniverseModel,
+  updateActiveModel,
+  type UniverseModelLibraryV1,
+} from "@/utils/universeModelLibrary";
 
-type Phase = "input" | "computing" | "result";
+type Phase = "input" | "computing" | "result" | "decode";
 
-type UniverseModelV1 = {
-  v: 1;
-  salt: number;
-  runCount: number;
-  theta16: number[];
-  policy: FormulaPolicy;
-  likes: { total: number; liked: number };
-  updatedAt: number;
+type DecodeMode = "result_current" | "model_current" | "result_history" | "llm_direct";
+
+type DirectSource = "current" | "last" | "history";
+
+type LlmModelConfig = {
+  id: string;
+  thinking: boolean;
+};
+
+type LlmConfigResponse = {
+  models: LlmModelConfig[];
+  defaults: { model: string; stream: boolean; thinking: boolean };
 };
 
 type EnhancedStateV1 = {
@@ -80,10 +101,6 @@ function parseDatetimeLocalValue(value: string) {
   return d;
 }
 
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function mix32(seed: number, n: number) {
   let x = (seed ^ n) >>> 0;
   x = Math.imul(x ^ (x >>> 16), 0x7feb352d) >>> 0;
@@ -95,6 +112,8 @@ function mix32(seed: number, n: number) {
 const MODEL_KEY = "gua.universeModel.v1";
 const ENHANCED_KEY = "gua.universeEnhanced.v1";
 const HISTORY_KEY = "gua.history.v1";
+const DECODE_PREFIX = "gua.decodePacket.v1:";
+const DECODE_OUTPUT_KEY = "gua.decodeOutput.v1";
 
 function clamp01(n: number) {
   if (n < 0) return 0;
@@ -340,6 +359,8 @@ export default function CyberGuaApp() {
   const [question, setQuestion] = useState("");
   const [nickname, setNickname] = useState("");
   const [model, setModel] = useState<UniverseModelV1 | null>(null);
+  const [modelLibrary, setModelLibrary] = useState<UniverseModelLibraryV1 | null>(null);
+  const [modelLibraryError, setModelLibraryError] = useState<string | null>(null);
   const [enhanced, setEnhanced] = useState<EnhancedStateV1>({
     v: 1,
     enabled: false,
@@ -357,12 +378,40 @@ export default function CyberGuaApp() {
   const [traceVisible, setTraceVisible] = useState(0);
   const [formulaSeed, setFormulaSeed] = useState<number | null>(null);
   const [feedbackLocked, setFeedbackLocked] = useState(false);
+  const [lastHistoryId, setLastHistoryId] = useState<string | null>(null);
+  const [decodePacket, setDecodePacket] = useState<unknown | null>(null);
+  const [decodeError, setDecodeError] = useState<string | null>(null);
+  const [decodeStreaming, setDecodeStreaming] = useState(false);
+  const [decodeAnswer, setDecodeAnswer] = useState("");
+  const [decodeReasoning, setDecodeReasoning] = useState("");
+  const [decodeMode, setDecodeMode] = useState<DecodeMode>("result_current");
+  const [decodeHistoryPickId, setDecodeHistoryPickId] = useState<string | null>(null);
+  const [directSource, setDirectSource] = useState<DirectSource>("current");
+  const [decodeAuto, setDecodeAuto] = useState(true);
+  const [decodeReasoningOpen, setDecodeReasoningOpen] = useState(false);
+  const [llmConfig, setLlmConfig] = useState<LlmConfigResponse | null>(null);
+  const [llmConfigError, setLlmConfigError] = useState<string | null>(null);
+  const [decodeModel, setDecodeModel] = useState<string | null>(null);
+  const [decodeStreamEnabled, setDecodeStreamEnabled] = useState(true);
+  const [decodeThinkingEnabled, setDecodeThinkingEnabled] = useState(true);
+  const [decodeThinkingSupported, setDecodeThinkingSupported] = useState(false);
+  const [aiConfigOpen, setAiConfigOpen] = useState(false);
+  const [computeSpeedMul, setComputeSpeedMul] = useState(1);
+  const decodeAbortRef = useRef<AbortController | null>(null);
+  const decodeOutRef = useRef<HTMLDivElement | null>(null);
+  const decodeReasonRef = useRef<HTMLDivElement | null>(null);
+  const decodeOutProgrammatic = useRef(false);
+  const decodeReasonProgrammatic = useRef(false);
+  const decodePendingRef = useRef<{ a: string; r: string; raf: number; timer: number }>({ a: "", r: "", raf: 0, timer: 0 });
+  const decodeRestoreOnceRef = useRef(false);
+  const decodeAutoStartRef = useRef(false);
+  const computeSpeedMulRef = useRef(1);
 
   const runIdRef = useRef(0);
   const modelRef = useRef<UniverseModelV1 | null>(null);
+  const modelLibraryRef = useRef<UniverseModelLibraryV1 | null>(null);
   const lastRunRef = useRef<{ fv16: number[]; entropy: number; obsHash: number } | null>(null);
   const lastHistoryIdRef = useRef<string | null>(null);
-  const importRef = useRef<HTMLInputElement | null>(null);
   const enhancedWriteRef = useRef(0);
   const enhancedRef = useRef(enhanced);
   const historyRef = useRef<HistoryItemV1[]>([]);
@@ -387,11 +436,10 @@ export default function CyberGuaApp() {
   });
 
   useEffect(() => {
-    const loaded = safeJsonParse<UniverseModelV1>(localStorage.getItem(MODEL_KEY));
-    if (loaded && loaded.v === 1 && Number.isFinite(loaded.salt) && Array.isArray(loaded.theta16) && loaded.theta16.length === 16) {
+    const normalizeModel = (loaded: UniverseModelV1) => {
       const likedRatio = loaded.likes?.total ? loaded.likes.liked / loaded.likes.total : 0;
       const policy = loaded.policy ? loaded.policy : defaultPolicyFromTheta(loaded.theta16, loaded.runCount, likedRatio);
-      const next: UniverseModelV1 = {
+      return {
         v: 1,
         salt: loaded.salt >>> 0,
         runCount: Math.max(0, Math.trunc(loaded.runCount ?? 0)),
@@ -402,19 +450,27 @@ export default function CyberGuaApp() {
           liked: Math.max(0, Math.trunc(loaded.likes?.liked ?? 0)),
         },
         updatedAt: Number.isFinite(loaded.updatedAt) ? loaded.updatedAt : Date.now(),
-      };
-      queueMicrotask(() => {
-        setModel(next);
-        modelRef.current = next;
-      });
-    } else {
-      const next = initModel();
-      localStorage.setItem(MODEL_KEY, JSON.stringify(next));
-      queueMicrotask(() => {
-        setModel(next);
-        modelRef.current = next;
-      });
-    }
+      } satisfies UniverseModelV1;
+    };
+
+    const legacyRaw = safeJsonParse<UniverseModelV1>(localStorage.getItem(MODEL_KEY));
+    const legacyModel =
+      legacyRaw && legacyRaw.v === 1 && Number.isFinite(legacyRaw.salt) && Array.isArray(legacyRaw.theta16) && legacyRaw.theta16.length === 16
+        ? normalizeModel(legacyRaw)
+        : null;
+
+    const lib = ensureUniverseModelLibrary({ legacyModel, initModel });
+    const activeItem = lib.items.find((x) => x.id === lib.activeId) ?? lib.items[0]!;
+    const activeModel = normalizeModel(activeItem.model);
+
+    localStorage.setItem(MODEL_KEY, JSON.stringify(activeModel));
+    queueMicrotask(() => {
+      setModel(activeModel);
+      modelRef.current = activeModel;
+      setModelLibrary(lib);
+      modelLibraryRef.current = lib;
+      setModelLibraryError(null);
+    });
 
     const loadedEnhanced = safeJsonParse<EnhancedStateV1>(localStorage.getItem(ENHANCED_KEY));
     if (loadedEnhanced && loadedEnhanced.v === 1) {
@@ -494,6 +550,55 @@ export default function CyberGuaApp() {
   useEffect(() => {
     historyRef.current = history;
   }, [history]);
+
+  useEffect(() => {
+    modelLibraryRef.current = modelLibrary;
+  }, [modelLibrary]);
+
+  useEffect(() => {
+    computeSpeedMulRef.current = computeSpeedMul;
+  }, [computeSpeedMul]);
+
+  useEffect(() => {
+    if (decodeRestoreOnceRef.current) return;
+    decodeRestoreOnceRef.current = true;
+    try {
+      const raw = sessionStorage.getItem(DECODE_OUTPUT_KEY);
+      const saved = safeJsonParse<{
+        mode?: DecodeMode;
+        model?: string | null;
+        stream?: boolean;
+        thinking?: boolean;
+        answer?: string;
+        reasoning?: string;
+        reasoningOpen?: boolean;
+        auto?: boolean;
+        directSource?: DirectSource;
+        historyPickId?: string | null;
+        streaming?: boolean;
+        updatedAt?: number;
+      }>(raw);
+      if (saved) {
+        if (saved.mode) setDecodeMode(saved.mode);
+        if (saved.model !== undefined) setDecodeModel(saved.model ?? null);
+        if (typeof saved.stream === "boolean") setDecodeStreamEnabled(saved.stream);
+        if (typeof saved.thinking === "boolean") setDecodeThinkingEnabled(saved.thinking);
+        if (typeof saved.auto === "boolean") setDecodeAuto(saved.auto);
+        if (typeof saved.reasoningOpen === "boolean") setDecodeReasoningOpen(saved.reasoningOpen);
+        if (saved.directSource) setDirectSource(saved.directSource);
+        if (saved.historyPickId !== undefined) setDecodeHistoryPickId(saved.historyPickId ?? null);
+        if (typeof saved.answer === "string") setDecodeAnswer(saved.answer);
+        if (typeof saved.reasoning === "string") setDecodeReasoning(saved.reasoning);
+        if (typeof saved.streaming === "boolean") {
+          const ts = Number(saved.updatedAt ?? NaN);
+          const fresh = Number.isFinite(ts) ? Date.now() - ts < 5000 : false;
+          setDecodeStreaming(saved.streaming && fresh);
+        }
+      }
+    } catch {
+      decodeRestoreOnceRef.current = true;
+    }
+  }, []);
 
   useEffect(() => {
     if (!enhanced.enabled) return;
@@ -616,6 +721,101 @@ export default function CyberGuaApp() {
     await requestMotion();
   };
 
+  const persistLibrary = (next: UniverseModelLibraryV1) => {
+    try {
+      saveUniverseModelLibrary(next);
+      setModelLibrary(next);
+      modelLibraryRef.current = next;
+      setModelLibraryError(null);
+    } catch {
+      setModelLibraryError("模型库写入失败。");
+      setModelLibrary(next);
+      modelLibraryRef.current = next;
+    }
+  };
+
+  const persistActiveModel = (nextModel: UniverseModelV1) => {
+    setModel(nextModel);
+    modelRef.current = nextModel;
+    localStorage.setItem(MODEL_KEY, JSON.stringify(nextModel));
+    const currentLib = modelLibraryRef.current ?? loadUniverseModelLibrary();
+    if (!currentLib) return;
+    persistLibrary(updateActiveModel(currentLib, nextModel));
+  };
+
+  const applyActiveFromLibrary = (nextLib: UniverseModelLibraryV1) => {
+    const active = nextLib.items.find((x) => x.id === nextLib.activeId) ?? nextLib.items[0];
+    if (active) {
+      setModel(active.model);
+      modelRef.current = active.model;
+      localStorage.setItem(MODEL_KEY, JSON.stringify(active.model));
+    }
+    persistLibrary(nextLib);
+  };
+
+  const playTrace = useCallback(async (steps: DivinationTraceEvent[], entropy: number, runId: number) => {
+    const totalMs = 20000;
+    const baseDelay = totalMs / Math.max(1, steps.length);
+    const durations = steps.map((s, i) => {
+      const phaseBoost = s?.phase === "易经" ? 180 : s?.phase === "融合" ? 140 : s?.phase === "归一" ? 220 : 0;
+      const jitter = Math.floor(((mix32(entropy, i + 31) >>> 0) % 160) - 80);
+      return Math.max(8, baseDelay + phaseBoost + jitter);
+    });
+
+    setTraceVisible(0);
+    const ok = await new Promise<boolean>((resolve) => {
+      let idx = 0;
+      let lastNow = performance.now();
+      let scaled = 0;
+
+      const tick = (now: number) => {
+        if (runIdRef.current !== runId) {
+          resolve(false);
+          return;
+        }
+        const speed = Math.max(1, Math.min(16, Math.floor(computeSpeedMulRef.current)));
+        scaled += (now - lastNow) * speed;
+        lastNow = now;
+        while (idx < durations.length && scaled >= durations[idx]!) {
+          scaled -= durations[idx]!;
+          idx += 1;
+          setTraceVisible(idx);
+        }
+        if (idx >= durations.length) {
+          resolve(true);
+          return;
+        }
+        requestAnimationFrame(tick);
+      };
+
+      requestAnimationFrame(tick);
+    });
+
+    if (!ok) return false;
+
+    const tailOk = await new Promise<boolean>((resolve) => {
+      let lastNow = performance.now();
+      let remaining = 260;
+      const tick = (now: number) => {
+        if (runIdRef.current !== runId) {
+          resolve(false);
+          return;
+        }
+        const speed = Math.max(1, Math.min(16, Math.floor(computeSpeedMulRef.current)));
+        remaining -= (now - lastNow) * speed;
+        lastNow = now;
+        if (remaining <= 0) {
+          resolve(true);
+          return;
+        }
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+
+    return tailOk;
+  }, []);
+
   const onStart = async () => {
     const q = question.trim();
     if (!q) {
@@ -625,6 +825,8 @@ export default function CyberGuaApp() {
 
     runIdRef.current += 1;
     const runId = runIdRef.current;
+    setComputeSpeedMul(1);
+    computeSpeedMulRef.current = 1;
     setError(null);
     setIsRunning(true);
     setRunPhase("computing");
@@ -683,20 +885,8 @@ export default function CyberGuaApp() {
 
       if (runIdRef.current !== runId) return;
       setTrace(steps);
-
-      const totalMs = 20000;
-      const baseDelay = Math.floor(totalMs / Math.max(1, steps.length));
-      for (let i = 0; i < steps.length; i += 1) {
-        if (runIdRef.current !== runId) return;
-        setTraceVisible(i + 1);
-        const phaseBoost =
-          steps[i]?.phase === "易经" ? 180 : steps[i]?.phase === "融合" ? 140 : steps[i]?.phase === "归一" ? 220 : 0;
-        const jitter = Math.floor(((mix32(entropy, i + 31) >>> 0) % 160) - 80);
-        await sleep(Math.max(18, baseDelay + phaseBoost + jitter));
-      }
-
-      if (runIdRef.current !== runId) return;
-      await sleep(260);
+      const playbackOk = await playTrace(steps, entropy, runId);
+      if (!playbackOk) return;
 
       setResult(res);
       setRunPhase("result");
@@ -721,9 +911,7 @@ export default function CyberGuaApp() {
         policy,
         updatedAt: Date.now(),
       };
-      setModel(nextModel);
-      modelRef.current = nextModel;
-      localStorage.setItem(MODEL_KEY, JSON.stringify(nextModel));
+      persistActiveModel(nextModel);
 
       const phases = Array.from(new Set(steps.map((x) => x.phase).filter(Boolean)));
       const formulaDataFinal = buildFormulaData(fSeed, phases, currentModel.policy);
@@ -748,9 +936,40 @@ export default function CyberGuaApp() {
         features16: fv16,
         feedback: 0,
       };
+      localStorage.setItem(
+        `${DECODE_PREFIX}${id}`,
+        JSON.stringify({
+          v: 1,
+          hid: id,
+          createdAt: record.createdAt,
+          input: {
+            question: record.question,
+            nickname: record.nickname ? record.nickname : undefined,
+            datetimeISO: record.datetimeISO,
+          },
+          result: {
+            score: res.score,
+            signature: res.signature,
+            omega: omega ? String(omega) : undefined,
+            formulaLatex,
+          },
+          carry: res.carry,
+          model: { salt: currentModel.salt, runCount: currentModel.runCount, theta16: effectiveTheta16, policy: currentModel.policy },
+          obs: { hash: obsHash, fp8: obsFp8, enhanced: enhanced.enabled ? 1 : 0 },
+          trace: steps,
+          extra: {
+            entropy,
+            rootDigest: root ? String(root) : undefined,
+            phases,
+            formula: { steps: formulaDataFinal.steps, params: formulaDataFinal.params },
+            features16: fv16,
+          },
+        }),
+      );
       const nextHistory = [record, ...historyRef.current].slice(0, 60);
       setHistoryPersist(nextHistory);
       lastHistoryIdRef.current = id;
+      setLastHistoryId(id);
     } catch (e) {
       setError(e instanceof Error ? e.message : "推演失败，请重试。");
       setIsRunning(false);
@@ -780,6 +999,7 @@ export default function CyberGuaApp() {
     setFormulaSeed(null);
     setIsRunning(false);
     setFeedbackLocked(false);
+    setLastHistoryId(null);
   };
 
   const setHistoryFeedback = (id: string, feedback: HistoryFeedback) => {
@@ -791,6 +1011,8 @@ export default function CyberGuaApp() {
     const next = historyRef.current.filter((item) => item.id !== id);
     setHistoryPersist(next);
     if (lastHistoryIdRef.current === id) lastHistoryIdRef.current = null;
+    if (lastHistoryId === id) setLastHistoryId(null);
+    localStorage.removeItem(`${DECODE_PREFIX}${id}`);
   };
 
   const onDislike = () => {
@@ -822,43 +1044,92 @@ export default function CyberGuaApp() {
       policy,
       updatedAt: Date.now(),
     };
-    setModel(nextModel);
-    modelRef.current = nextModel;
-    localStorage.setItem(MODEL_KEY, JSON.stringify(nextModel));
+    persistActiveModel(nextModel);
     const lastId = lastHistoryIdRef.current;
     if (lastId) setHistoryFeedback(lastId, 1);
     setFeedbackLocked(true);
   };
 
-  const onExportModel = () => {
-    const m = modelRef.current;
-    if (!m) return;
-    downloadJson(`gua-universe-model-${hex8(m.salt)}-${m.runCount}.json`, m);
+  const onCreateNewModelSlot = () => {
+    const lib = modelLibraryRef.current ?? ensureUniverseModelLibrary({ legacyModel: modelRef.current, initModel });
+    const now = Date.now();
+    const id = makeLibraryId();
+    const nextModel = initModel();
+    const name = `新模型 ${lib.items.length + 1}`;
+    const nextLib = addUniverseModelItem(lib, { id, name, model: nextModel, createdAt: now, updatedAt: now }, false);
+    persistLibrary(nextLib);
   };
 
-  const onImportModel = async (file: File) => {
+  const onCloneCurrentModelSlot = () => {
+    const base = modelRef.current;
+    if (!base) return;
+    const lib = modelLibraryRef.current ?? ensureUniverseModelLibrary({ legacyModel: base, initModel });
+    const now = Date.now();
+    const id = makeLibraryId();
+    const name = `副本 ${lib.items.length + 1}`;
+    const copy: UniverseModelV1 = {
+      ...base,
+      theta16: [...base.theta16],
+      likes: { ...base.likes },
+      updatedAt: now,
+    };
+    const nextLib = addUniverseModelItem(lib, { id, name, model: copy, createdAt: now, updatedAt: now }, false);
+    persistLibrary(nextLib);
+  };
+
+  const onImportModelAsNewSlot = async (file: File) => {
     const text = await file.text();
     const parsed = safeJsonParse<UniverseModelV1>(text);
     if (!parsed || parsed.v !== 1 || !Number.isFinite(parsed.salt) || !Array.isArray(parsed.theta16) || parsed.theta16.length !== 16) {
-      setError("模型格式不正确。");
+      setModelLibraryError("模型格式不正确。");
       return;
     }
-    const next: UniverseModelV1 = {
+    const now = Date.now();
+    const likedRatio = parsed.likes?.total ? parsed.likes.liked / parsed.likes.total : 0;
+    const policy = parsed.policy ? parsed.policy : defaultPolicyFromTheta(parsed.theta16, parsed.runCount, likedRatio);
+    const nextModel: UniverseModelV1 = {
       v: 1,
       salt: parsed.salt >>> 0,
       runCount: Math.max(0, Math.trunc(parsed.runCount ?? 0)),
       theta16: parsed.theta16.map((x) => clamp01(Number(x))),
-      policy: parsed.policy ?? defaultPolicyFromTheta(parsed.theta16, parsed.runCount ?? 0, 0),
+      policy,
       likes: {
         total: Math.max(0, Math.trunc(parsed.likes?.total ?? 0)),
         liked: Math.max(0, Math.trunc(parsed.likes?.liked ?? 0)),
       },
-      updatedAt: Date.now(),
+      updatedAt: now,
     };
-    setModel(next);
-    modelRef.current = next;
-    localStorage.setItem(MODEL_KEY, JSON.stringify(next));
-    setError(null);
+    const lib = modelLibraryRef.current ?? ensureUniverseModelLibrary({ legacyModel: modelRef.current, initModel });
+    const id = makeLibraryId();
+    const name = `导入 ${hex8(nextModel.salt)}-${nextModel.runCount}`;
+    const nextLib = addUniverseModelItem(lib, { id, name, model: nextModel, createdAt: now, updatedAt: now }, false);
+    persistLibrary(nextLib);
+  };
+
+  const onSetActiveModelSlot = (id: string) => {
+    const lib = modelLibraryRef.current ?? loadUniverseModelLibrary();
+    if (!lib) return;
+    applyActiveFromLibrary(setActiveUniverseModel(lib, id));
+  };
+
+  const onExportModelSlot = (id: string) => {
+    const lib = modelLibraryRef.current ?? loadUniverseModelLibrary();
+    const item = lib?.items.find((x) => x.id === id);
+    if (!item) return;
+    const m = item.model;
+    downloadJson(`gua-universe-model-${hex8(m.salt)}-${m.runCount}.json`, m);
+  };
+
+  const onRenameModelSlot = (id: string, name: string) => {
+    const lib = modelLibraryRef.current ?? loadUniverseModelLibrary();
+    if (!lib) return;
+    persistLibrary(renameUniverseModelItem(lib, id, name));
+  };
+
+  const onDeleteModelSlot = (id: string) => {
+    const lib = modelLibraryRef.current ?? loadUniverseModelLibrary();
+    if (!lib) return;
+    applyActiveFromLibrary(deleteUniverseModelItem(lib, id));
   };
 
   const canStart = question.trim().length > 0;
@@ -895,13 +1166,482 @@ export default function CyberGuaApp() {
   const lunarMarkdown = useMemo(() => {
     return streamLines(lunarLines, traceVisible, trace.length, runPhase);
   }, [lunarLines, traceVisible, trace.length, runPhase]);
-  const phaseLabels = ["输入", "推演", "归一"];
-  const phaseIndex = activeTab === "input" ? 0 : activeTab === "computing" ? 1 : 2;
+  const phases: Array<{ label: string; value: Phase; enabled: boolean }> = useMemo(() => {
+    return [
+      { label: "输入", value: "input", enabled: true },
+      { label: "推演", value: "computing", enabled: true },
+      { label: "归一", value: "result", enabled: true },
+      { label: "解码", value: "decode", enabled: true },
+    ];
+  }, []);
+  const phaseIndex = useMemo(() => {
+    const idx = phases.findIndex((p) => p.value === activeTab);
+    return idx >= 0 ? idx : 0;
+  }, [activeTab, phases]);
   const progressPct = useMemo(() => {
     if (trace.length <= 0) return isRunning ? 6 : 0;
     const p = Math.round((traceVisible / Math.max(1, trace.length)) * 100);
     return Math.max(0, Math.min(100, p));
   }, [isRunning, traceVisible, trace.length]);
+
+  const decodeSummary = useMemo(() => {
+    const p = decodePacket as
+      | {
+          input?: { question?: string; nickname?: string; datetimeISO?: string };
+          result?: { score?: number; signature?: string; omega?: string; formulaLatex?: string };
+          model?: { runCount?: number };
+        }
+      | null;
+    if (!p) return null;
+    const score = Number(p.result?.score ?? 0);
+    const sig = p.result?.signature ? String(p.result.signature).slice(0, 8) : "—";
+    const omega = p.result?.omega ? String(p.result.omega) : "—";
+    const questionText = p.input?.question ? String(p.input.question) : "";
+    const runCount = Number(p.model?.runCount ?? NaN);
+    return { score, sig, omega, questionText, runCount: Number.isFinite(runCount) ? runCount : null };
+  }, [decodePacket]);
+
+  const llmLogic = useMemo(() => {
+    return [
+      "一句话：输入极简，过程极繁，输出极决。",
+      "",
+      "系统四步：输入→推演→归一→解码。",
+      "",
+      "输入：问题文本 x、起卦时间 t、可选昵称 n。",
+      "观测：浏览器被动采集 o（设备/系统/网络/偏好等），可选增强观测 o+（需授权），以及用户交互扰动 e（微熵）。",
+      "模型：本机宇宙常量模型 M 存于本地，会随推演次数缓慢收敛。",
+      "",
+      "推演方法论：",
+      "- 用 (t, x, n, o, o+, e, M) 构造种子 s，并驱动可复算的伪随机过程。",
+      "- 生成参数集合 Θ（含 Q,T,N,ε,α,β,γ 与阶段因子 Φi），并附带中文语义标签。",
+      "- 合成表达式结构 f(·)，得到公式 Ω = f(Θ)。",
+      "",
+      "归一方法论：",
+      "- 对参数闭式进行解析并数值化得到 \\hat{Θ}。",
+      "- 对表达式树递归求值，得到 Ω 数值（有限优先）。",
+      "- 输出：Ω 等式、Ω 数值、Score（0-100）、可选签文 signature。",
+      "",
+      "边界：输出不承诺对应现实世界，只承诺对应“你的宇宙”。",
+    ].join("\n");
+  }, []);
+
+  function loadPacketById(id: string) {
+    const saved = safeJsonParse<unknown>(localStorage.getItem(`${DECODE_PREFIX}${id}`));
+    if (saved) return saved;
+    const item = historyRef.current.find((x) => x && x.v === 1 && x.id === id);
+    if (!item) return null;
+    return {
+      v: 1,
+      hid: item.id,
+      createdAt: item.createdAt,
+      input: {
+        question: item.question,
+        nickname: item.nickname || undefined,
+        datetimeISO: item.datetimeISO,
+      },
+      result: {
+        score: item.score,
+        signature: item.signature || undefined,
+        omega: item.omega || undefined,
+        formulaLatex: item.formulaLatex || undefined,
+      },
+    };
+  }
+
+  useEffect(() => {
+    if (activeTab !== "decode") return;
+
+    setLlmConfigError(null);
+    if (!llmConfig) {
+      void (async () => {
+        try {
+          const res = await fetch("/api/llm/config", { method: "GET" });
+          if (!res.ok) {
+            const msg = await res.text().catch(() => "");
+            throw new Error(msg || `加载模型配置失败（HTTP ${res.status}）`);
+          }
+          const cfg = (await res.json()) as LlmConfigResponse;
+          setLlmConfig(cfg);
+          setDecodeModel((prev) => prev ?? cfg.defaults.model);
+          setDecodeStreamEnabled((prev) => (prev === true || prev === false ? prev : cfg.defaults.stream));
+          setDecodeThinkingEnabled((prev) => (prev === true || prev === false ? prev : cfg.defaults.thinking));
+        } catch (e) {
+          setLlmConfigError(e instanceof Error ? e.message : "加载模型配置失败。");
+        }
+      })();
+    }
+
+    if (decodeMode === "result_current") {
+      if (!lastHistoryId) {
+        setDecodePacket(null);
+        setDecodeError("当前暂无归一结果：请先完成一次推演并归一。");
+        return;
+      }
+      const packet = loadPacketById(lastHistoryId);
+      if (!packet) {
+        setDecodePacket(null);
+        setDecodeError("未找到对应推演记录：请先完成一次推演并归一。");
+        return;
+      }
+      setDecodePacket(packet);
+      return;
+    }
+
+    if (decodeMode === "result_history") {
+      if (!decodeHistoryPickId) {
+        setDecodePacket(null);
+        return;
+      }
+      const packet = loadPacketById(decodeHistoryPickId);
+      if (!packet) {
+        setDecodePacket(null);
+        setDecodeError("未找到对应历史记录。");
+        return;
+      }
+      setDecodePacket(packet);
+      return;
+    }
+
+    if (decodeMode === "model_current") {
+      const m = modelRef.current;
+      const recent = historyRef.current.slice(0, 20).map((x) => ({
+        id: x.id,
+        createdAt: x.createdAt,
+        datetimeISO: x.datetimeISO,
+        question: x.question,
+        score: x.score,
+        omega: x.omega,
+        signature: x.signature,
+        feedback: x.feedback,
+      }));
+      setDecodePacket({
+        v: 1,
+        model: m,
+        dashboard,
+        enhanced,
+        recent,
+      });
+      return;
+    }
+
+    if (decodeMode === "llm_direct") {
+      const m = modelRef.current;
+      if (directSource === "current") {
+        const q = question.trim();
+        if (!q) {
+          setDecodePacket(null);
+          setDecodeError("当前输入为空：请先填写问题文本，或切换到历史/最近一次作为数据来源。");
+          return;
+        }
+        const passive = collectPassiveObservables();
+        setDecodePacket({
+          logic: llmLogic,
+          payload: {
+            input: {
+              question: q,
+              nickname: nickname.trim() ? nickname.trim() : undefined,
+              datetimeISO: datetime.toISOString(),
+            },
+            obs: {
+              passive,
+              enhanced: enhancedRef.current,
+            },
+            model: m,
+            dashboard,
+            recentHistory: historyRef.current.slice(0, 20).map((x) => ({
+              id: x.id,
+              datetimeISO: x.datetimeISO,
+              question: x.question,
+              score: x.score,
+              omega: x.omega,
+              signature: x.signature,
+              feedback: x.feedback,
+            })),
+          },
+        });
+        return;
+      }
+      if (directSource === "last") {
+        if (!lastHistoryId) {
+          setDecodePacket(null);
+          setDecodeError("当前暂无归一结果：请先完成一次推演并归一，或切换到历史作为数据来源。");
+          return;
+        }
+        const packet = loadPacketById(lastHistoryId);
+        if (!packet) {
+          setDecodePacket(null);
+          setDecodeError("未找到对应推演记录。");
+          return;
+        }
+        setDecodePacket({ logic: llmLogic, payload: { packet, model: m, dashboard } });
+        return;
+      }
+      if (!decodeHistoryPickId) {
+        setDecodePacket(null);
+        return;
+      }
+      const packet = loadPacketById(decodeHistoryPickId);
+      if (!packet) {
+        setDecodePacket(null);
+        setDecodeError("未找到对应历史记录。");
+        return;
+      }
+      setDecodePacket({ logic: llmLogic, payload: { packet, model: m, dashboard } });
+      return;
+    }
+  }, [activeTab, dashboard, datetime, decodeHistoryPickId, decodeMode, directSource, enhanced, lastHistoryId, llmConfig, llmLogic, nickname, question]);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(
+        DECODE_OUTPUT_KEY,
+        JSON.stringify({
+          mode: decodeMode,
+          model: decodeModel,
+          stream: decodeStreamEnabled,
+          thinking: decodeThinkingEnabled,
+          answer: decodeAnswer,
+          reasoning: decodeReasoning,
+          reasoningOpen: decodeReasoningOpen,
+          auto: decodeAuto,
+          directSource,
+          historyPickId: decodeHistoryPickId,
+          streaming: decodeStreaming,
+          updatedAt: Date.now(),
+        }),
+      );
+    } catch {
+      return;
+    }
+  }, [
+    decodeAnswer,
+    decodeAuto,
+    decodeHistoryPickId,
+    decodeMode,
+    decodeModel,
+    decodeReasoning,
+    decodeReasoningOpen,
+    decodeStreaming,
+    decodeStreamEnabled,
+    decodeThinkingEnabled,
+    directSource,
+  ]);
+
+  useEffect(() => {
+    const models = llmConfig?.models ?? [];
+    const id = (decodeModel ?? "").trim();
+    if (!id) {
+      setDecodeThinkingSupported(false);
+      setDecodeThinkingEnabled(false);
+      return;
+    }
+    const m = models.find((x) => x.id === id);
+    const supported = Boolean(m?.thinking);
+    setDecodeThinkingSupported(supported);
+    if (!supported) setDecodeThinkingEnabled(false);
+  }, [decodeModel, llmConfig]);
+
+  const onDecodeStop = () => {
+    decodeAbortRef.current?.abort();
+    decodeAbortRef.current = null;
+    if (decodePendingRef.current.raf) cancelAnimationFrame(decodePendingRef.current.raf);
+    decodePendingRef.current.raf = 0;
+    if (decodePendingRef.current.timer) clearTimeout(decodePendingRef.current.timer);
+    decodePendingRef.current.timer = 0;
+    const a = decodePendingRef.current.a;
+    const r = decodePendingRef.current.r;
+    decodePendingRef.current.a = "";
+    decodePendingRef.current.r = "";
+    if (a) setDecodeAnswer((prev) => prev + a);
+    if (r) setDecodeReasoning((prev) => prev + r);
+    setDecodeStreaming(false);
+  };
+
+  const scheduleDecodeFlush = useCallback(() => {
+    if (decodePendingRef.current.raf) return;
+    decodePendingRef.current.raf = requestAnimationFrame(() => {
+      decodePendingRef.current.raf = 0;
+      const a = decodePendingRef.current.a;
+      const r = decodePendingRef.current.r;
+      decodePendingRef.current.a = "";
+      decodePendingRef.current.r = "";
+      if (a) setDecodeAnswer((prev) => prev + a);
+      if (r) setDecodeReasoning((prev) => prev + r);
+    });
+    if (!decodePendingRef.current.timer) {
+      decodePendingRef.current.timer = window.setTimeout(() => {
+        decodePendingRef.current.timer = 0;
+        if (decodePendingRef.current.raf) cancelAnimationFrame(decodePendingRef.current.raf);
+        decodePendingRef.current.raf = 0;
+        const a = decodePendingRef.current.a;
+        const r = decodePendingRef.current.r;
+        decodePendingRef.current.a = "";
+        decodePendingRef.current.r = "";
+        if (a) setDecodeAnswer((prev) => prev + a);
+        if (r) setDecodeReasoning((prev) => prev + r);
+      }, 200);
+    }
+  }, []);
+
+  const pushDecodeChunk = useCallback(
+    (kind: "c" | "r", delta: string) => {
+      if (!delta) return;
+      if (kind === "c") decodePendingRef.current.a += delta;
+      else decodePendingRef.current.r += delta;
+      scheduleDecodeFlush();
+    },
+    [scheduleDecodeFlush],
+  );
+
+  function isNearBottom(node: HTMLDivElement, thresholdPx: number) {
+    const distance = node.scrollHeight - node.scrollTop - node.clientHeight;
+    return distance <= thresholdPx;
+  }
+
+  const scrollDecodeToBottom = useCallback(() => {
+    const node = decodeOutRef.current;
+    if (!node) return;
+    decodeOutProgrammatic.current = true;
+    node.scrollTop = node.scrollHeight;
+  }, []);
+
+  const scrollReasonToBottom = useCallback(() => {
+    const node = decodeReasonRef.current;
+    if (!node) return;
+    decodeReasonProgrammatic.current = true;
+    node.scrollTop = node.scrollHeight;
+  }, []);
+
+  const flushDecodePendingNow = useCallback(() => {
+    if (decodePendingRef.current.raf) cancelAnimationFrame(decodePendingRef.current.raf);
+    decodePendingRef.current.raf = 0;
+    if (decodePendingRef.current.timer) clearTimeout(decodePendingRef.current.timer);
+    decodePendingRef.current.timer = 0;
+    const a = decodePendingRef.current.a;
+    const r = decodePendingRef.current.r;
+    decodePendingRef.current.a = "";
+    decodePendingRef.current.r = "";
+    if (a) setDecodeAnswer((prev) => prev + a);
+    if (r) setDecodeReasoning((prev) => prev + r);
+  }, []);
+
+  const onDecodeStart = useCallback(async () => {
+    if (decodeStreaming) return;
+    if (!decodePacket) {
+      setDecodeError(decodeMode === "result_history" || directSource === "history" ? "请选择一条历史记录。" : "缺少解码输入。");
+      return;
+    }
+
+    setDecodeError(null);
+    setDecodeAnswer("");
+    setDecodeReasoning("");
+    setDecodeReasoningOpen(false);
+    try {
+      sessionStorage.setItem(
+        DECODE_OUTPUT_KEY,
+        JSON.stringify({
+          mode: decodeMode,
+          model: decodeModel,
+          stream: decodeStreamEnabled,
+          thinking: decodeThinkingEnabled,
+          answer: "",
+          reasoning: "",
+          reasoningOpen: false,
+          auto: decodeAuto,
+          directSource,
+          historyPickId: decodeHistoryPickId,
+          streaming: true,
+          updatedAt: Date.now(),
+        }),
+      );
+    } catch {
+      void 0;
+    }
+    setDecodeStreaming(true);
+    const ctrl = new AbortController();
+    decodeAbortRef.current = ctrl;
+    try {
+      await streamDecode({
+        mode: decodeMode,
+        context: decodePacket,
+        options: {
+          model: decodeModel,
+          stream: decodeStreamEnabled,
+          thinking: decodeThinkingEnabled,
+        },
+        signal: ctrl.signal,
+        onContent: (d) => pushDecodeChunk("c", d),
+        onReasoning: (d) => pushDecodeChunk("r", d),
+      });
+      flushDecodePendingNow();
+    } catch (e) {
+      if ((e as { name?: string }).name !== "AbortError") {
+        setDecodeError(e instanceof Error ? e.message : "解码失败。");
+      }
+    } finally {
+      flushDecodePendingNow();
+      setDecodeStreaming(false);
+      decodeAbortRef.current = null;
+    }
+  }, [
+    decodeAuto,
+    decodeHistoryPickId,
+    decodeMode,
+    decodeModel,
+    decodePacket,
+    decodeStreamEnabled,
+    decodeStreaming,
+    decodeThinkingEnabled,
+    directSource,
+    flushDecodePendingNow,
+    pushDecodeChunk,
+  ]);
+
+  useEffect(() => {
+    if (!decodeAutoStartRef.current) return;
+    if (activeTab !== "decode") return;
+    if (decodeStreaming) return;
+    if (decodeMode !== "llm_direct" || directSource !== "current") return;
+    if (!decodePacket) return;
+    decodeAutoStartRef.current = false;
+    void onDecodeStart();
+  }, [activeTab, decodeMode, decodePacket, decodeStreaming, directSource, onDecodeStart]);
+
+  useEffect(() => {
+    const node = decodeOutRef.current;
+    if (!node) return;
+    if (!decodeAuto) return;
+    if (!decodeStreaming && !decodeAnswer) return;
+    scrollDecodeToBottom();
+  }, [decodeAnswer, decodeAuto, decodeStreaming, scrollDecodeToBottom]);
+
+  useEffect(() => {
+    const node = decodeReasonRef.current;
+    if (!node) return;
+    if (!decodeAuto) return;
+    if (!decodeReasoningOpen) return;
+    if (!decodeStreaming && !decodeReasoning) return;
+    scrollReasonToBottom();
+  }, [decodeAuto, decodeReasoning, decodeReasoningOpen, decodeStreaming, scrollReasonToBottom]);
+
+  useEffect(() => {
+    const handler = () => {
+      if (activeTab !== "decode") return;
+      flushDecodePendingNow();
+      if (decodeAuto) {
+        scrollDecodeToBottom();
+        if (decodeReasoningOpen) scrollReasonToBottom();
+      }
+    };
+    document.addEventListener("visibilitychange", handler);
+    return () => document.removeEventListener("visibilitychange", handler);
+  }, [activeTab, decodeAuto, decodeReasoningOpen, flushDecodePendingNow, scrollDecodeToBottom, scrollReasonToBottom]);
+
+  const decodeReasoningMarkdown = useMemo(() => {
+    const t = decodeReasoning || "";
+    if (!t.trim()) return "";
+    return `> ${t.replace(/\n/g, "\n> ")}`;
+  }, [decodeReasoning]);
 
   return (
     <Box className="gua-bg" mih="100dvh">
@@ -980,34 +1720,42 @@ export default function CyberGuaApp() {
 
           <Stack gap={8} className="gua-phase">
             <Group justify="space-between" className="gua-phase-labels">
-              {phaseLabels.map((label, index) => {
-                const value: Phase = index === 0 ? "input" : index === 1 ? "computing" : "result";
+              {phases.map((p, index) => {
                 return (
                   <UnstyledButton
-                    key={label}
+                    key={p.label}
                     className="gua-phase-tab"
-                    onClick={() => setActiveTab(value)}
-                    aria-current={activeTab === value ? "page" : undefined}
+                    onClick={() => {
+                      if (!p.enabled) return;
+                      setActiveTab(p.value);
+                    }}
+                    aria-current={activeTab === p.value ? "page" : undefined}
                   >
-                    <Text key={label} fz="xs" className={index === phaseIndex ? "gua-phase-active" : "gua-phase-idle"}>
-                      {label}
+                    <Text fz="xs" className={index === phaseIndex ? "gua-phase-active" : "gua-phase-idle"}>
+                      {p.label}
                     </Text>
                   </UnstyledButton>
                 );
               })}
             </Group>
             <Box className="gua-stepper">
-              {phaseLabels.map((label, index) => {
-                const value: Phase = index === 0 ? "input" : index === 1 ? "computing" : "result";
+              {phases.map((p, index) => {
                 return (
-                  <UnstyledButton key={label} className="gua-phase-tab" onClick={() => setActiveTab(value)}>
+                  <UnstyledButton
+                    key={p.label}
+                    className="gua-phase-tab"
+                    onClick={() => {
+                      if (!p.enabled) return;
+                      setActiveTab(p.value);
+                    }}
+                  >
                     <Box className={index === phaseIndex ? "gua-step gua-step-active" : "gua-step"} />
                   </UnstyledButton>
                 );
               })}
             </Box>
             <Text fz="xs" className="gua-phase-current">
-              当前页面 · {phaseLabels[phaseIndex]}
+              当前页面 · {phases[phaseIndex]?.label ?? "输入"}
             </Text>
           </Stack>
 
@@ -1021,9 +1769,35 @@ export default function CyberGuaApp() {
               </Button>
             </Group>
             <Group gap="xs">
+              {activeTab === "input" ? (
+                <Button
+                  radius="xl"
+                  variant="default"
+                  disabled={!canStart}
+                  onClick={() => {
+                    const q = question.trim();
+                    if (!q) {
+                      setError("目标/问题不可为空。");
+                      return;
+                    }
+                    setError(null);
+                    decodeAutoStartRef.current = true;
+                    setDecodeMode("llm_direct");
+                    setDirectSource("current");
+                    setActiveTab("decode");
+                  }}
+                >
+                  AI推演
+                </Button>
+              ) : null}
               <Button radius="xl" onClick={onStart} disabled={!canStart}>
                 {runPhase === "input" && trace.length === 0 && !result ? "开始推演" : "再推演一次"}
               </Button>
+              <ActionIcon variant="subtle" color="gray" radius="xl" aria-label="AI 配置" onClick={() => setAiConfigOpen(true)}>
+                <Text fw={700} fz="xs">
+                  AI
+                </Text>
+              </ActionIcon>
               <ActionIcon
                 variant="subtle"
                 color="gray"
@@ -1124,9 +1898,26 @@ export default function CyberGuaApp() {
                         {trace.length > 0 ? `${Math.min(traceVisible, trace.length)}/${trace.length}` : "采样中"} · {progressPct}%
                       </Text>
                     </Stack>
-                    <Box style={{ width: 160 }}>
-                      <Progress value={progressPct} />
-                    </Box>
+                    <Group gap="xs" wrap="nowrap">
+                      <Button
+                        radius="xl"
+                        variant="default"
+                        disabled={!isRunning || computeSpeedMul >= 16}
+                        onClick={() => {
+                          setComputeSpeedMul((prev) => {
+                            const next = Math.min(16, prev * 2);
+                            const resolved = Number.isFinite(next) ? next : prev;
+                            computeSpeedMulRef.current = resolved;
+                            return resolved;
+                          });
+                        }}
+                      >
+                        加速 ×{computeSpeedMul}
+                      </Button>
+                      <Box style={{ width: 160 }}>
+                        <Progress value={progressPct} />
+                      </Box>
+                    </Group>
                   </Group>
                 </Paper>
                 <StreamingPanels
@@ -1172,6 +1963,22 @@ export default function CyberGuaApp() {
                         Score={result.score}{result.signature ? ` · ${result.signature.slice(0, 8)}` : ""}
                       </Text>
                     </Stack>
+                    <Group gap="xs" wrap="nowrap">
+                      <Button
+                        radius="xl"
+                        variant="default"
+                        onClick={() => {
+                          const id = lastHistoryIdRef.current;
+                          if (!id) return;
+                          setDecodeMode("result_current");
+                          setDirectSource("current");
+                          setActiveTab("decode");
+                        }}
+                        disabled={!lastHistoryId}
+                      >
+                        解码
+                      </Button>
+                    </Group>
                   </Group>
                 </Paper>
                 <Paper radius="md" p="md" className="gua-panel">
@@ -1210,6 +2017,110 @@ export default function CyberGuaApp() {
                 </Stack>
               </Paper>
             )
+          ) : null}
+
+          {activeTab === "decode" ? (
+            <Stack gap="md">
+              <DecodePromptPanel
+                decodeMode={decodeMode}
+                setDecodeMode={setDecodeMode}
+                directSource={directSource}
+                setDirectSource={setDirectSource}
+                decodeHistoryPickId={decodeHistoryPickId}
+                setDecodeHistoryPickId={setDecodeHistoryPickId}
+                history={history}
+                onBack={() => setActiveTab(result && runPhase === "result" ? "result" : "input")}
+                summaryText={
+                  decodeMode === "model_current"
+                    ? `runCount=${decodeSummary?.runCount ?? (model?.runCount ?? 0)}`
+                    : decodeSummary?.questionText
+                      ? decodeSummary.questionText
+                      : decodeMode === "llm_direct" && directSource === "current"
+                        ? question.trim() || "（当前输入为空）"
+                        : "—"
+                }
+              />
+
+              {decodeError ? (
+                <Alert color="gray" variant="light" radius="md" className="gua-alert">
+                  {decodeError}
+                </Alert>
+              ) : null}
+
+              <Paper radius="md" p="md" className="gua-panel">
+                <Group justify="space-between" align="center" wrap="wrap" gap="sm">
+                  <Text fw={600} fz="sm">
+                    解码输出
+                  </Text>
+                  <Group gap="xs" wrap="wrap" style={{ justifyContent: "flex-end", flex: "1 1 360px" }}>
+                    <Button
+                      radius="xl"
+                      variant={decodeAuto ? "filled" : "default"}
+                      onClick={() => {
+                        if (decodeAuto) {
+                          setDecodeAuto(false);
+                          return;
+                        }
+                        setDecodeAuto(true);
+                        scrollDecodeToBottom();
+                      }}
+                    >
+                      {decodeAuto ? "滚屏开" : "滚屏关"}
+                    </Button>
+                    {decodeReasoning.trim() ? (
+                      <Button
+                        radius="xl"
+                        variant="default"
+                        onClick={() => {
+                          setDecodeReasoningOpen((v) => !v);
+                          if (!decodeReasoningOpen && decodeAuto) queueMicrotask(() => scrollReasonToBottom());
+                        }}
+                      >
+                        {decodeReasoningOpen ? "收起思考" : "查看思考"}
+                      </Button>
+                    ) : null}
+                    <Button radius="xl" variant="default" onClick={onDecodeStop} disabled={!decodeStreaming}>
+                      停止
+                    </Button>
+                    <Button radius="xl" onClick={onDecodeStart} disabled={!decodePacket || decodeStreaming}>
+                      {decodeStreaming ? "解码中…" : "开始解码"}
+                    </Button>
+                  </Group>
+                </Group>
+                {decodeReasoningOpen && decodeReasoningMarkdown ? (
+                  <Box
+                    ref={decodeReasonRef}
+                    mt="sm"
+                    className="gua-stream-body gua-scroll-body gua-decode-reasoning"
+                    onScroll={(e) => {
+                      const node = e.currentTarget;
+                      if (decodeReasonProgrammatic.current) {
+                        decodeReasonProgrammatic.current = false;
+                        return;
+                      }
+                      if (decodeAuto && !isNearBottom(node, 48)) setDecodeAuto(false);
+                    }}
+                  >
+                    <MarkdownStream content={decodeReasoningMarkdown} className="gua-stream-body-inner" />
+                  </Box>
+                ) : null}
+                <Box
+                  ref={decodeOutRef}
+                  mt="sm"
+                  className="gua-stream-body gua-decode-body"
+                  onScroll={(e) => {
+                    const node = e.currentTarget;
+                    if (decodeOutProgrammatic.current) {
+                      decodeOutProgrammatic.current = false;
+                      return;
+                    }
+                    if (decodeAuto && !isNearBottom(node, 48)) setDecodeAuto(false);
+                  }}
+                >
+                  <MarkdownStream content={decodeAnswer || (decodeStreaming ? "正在解码…" : "")} className="gua-stream-body-inner" />
+                </Box>
+              </Paper>
+            </Stack>
           ) : null}
 
           <Text ta="center" fz="xs" className="gua-footer">
@@ -1404,35 +2315,18 @@ export default function CyberGuaApp() {
             </Box>
           </Paper>
 
-          <Paper radius="md" p="md" className="gua-panel">
-            <Group justify="space-between" align="center" wrap="nowrap">
-              <Text fw={600} className="gua-section-title">
-                宇宙常量模型
-              </Text>
-              <Badge variant="light" color="gray" radius="md" className="gua-chip">
-                {model ? `已推演 ${model.runCount} 次` : "载入中"}
-              </Badge>
-            </Group>
-            <Group mt="sm" justify="flex-end">
-              <Button radius="xl" variant="default" onClick={onExportModel} disabled={!model}>
-                导出
-              </Button>
-              <Button radius="xl" variant="default" onClick={() => importRef.current?.click()}>
-                导入
-              </Button>
-              <input
-                ref={importRef}
-                type="file"
-                accept="application/json"
-                style={{ display: "none" }}
-                onChange={(e) => {
-                  const f = e.currentTarget.files?.[0];
-                  e.currentTarget.value = "";
-                  if (f) void onImportModel(f);
-                }}
-              />
-            </Group>
-          </Paper>
+          <UniverseModelLibraryPanel
+            library={modelLibrary}
+            activeModel={model}
+            error={modelLibraryError}
+            onCreateNew={onCreateNewModelSlot}
+            onCloneCurrent={onCloneCurrentModelSlot}
+            onImportAsNew={(f) => void onImportModelAsNewSlot(f)}
+            onSetActive={onSetActiveModelSlot}
+            onExportItem={onExportModelSlot}
+            onDeleteItem={onDeleteModelSlot}
+            onRenameItem={onRenameModelSlot}
+          />
 
           <Paper radius="md" p="md" className="gua-panel">
             <Group justify="space-between" align="center" wrap="nowrap">
@@ -1450,6 +2344,27 @@ export default function CyberGuaApp() {
           </Paper>
         </Stack>
       </Modal>
+
+      <AiConfigModal
+        opened={aiConfigOpen}
+        onClose={() => setAiConfigOpen(false)}
+        llmConfig={llmConfig}
+        llmConfigError={llmConfigError}
+        decodeModel={decodeModel}
+        setDecodeModel={setDecodeModel}
+        decodeStreamEnabled={decodeStreamEnabled}
+        setDecodeStreamEnabled={setDecodeStreamEnabled}
+        decodeThinkingEnabled={decodeThinkingEnabled}
+        setDecodeThinkingEnabled={setDecodeThinkingEnabled}
+        decodeThinkingSupported={decodeThinkingSupported}
+        onResetDefaults={() => {
+          const d = llmConfig?.defaults;
+          if (!d) return;
+          setDecodeModel(d.model);
+          setDecodeStreamEnabled(d.stream);
+          setDecodeThinkingEnabled(d.thinking);
+        }}
+      />
     </Box>
   );
 }
