@@ -3,41 +3,51 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActionIcon,
-  Alert,
-  Badge,
   Box,
   Button,
   Container,
   Group,
-  Progress,
-  SegmentedControl,
-  Switch,
   Modal,
-  Paper,
-  SimpleGrid,
   Stack,
   Text,
-  TextInput,
-  Textarea,
   Title,
   UnstyledButton,
 } from "@mantine/core";
-import { Lunar } from "lunar-javascript";
-import QRCode from "qrcode";
-import html2canvas from "html2canvas";
-import { StreamingPanels } from "@/components/StreamingPanels";
 import { MarkdownStream } from "@/components/MarkdownStream";
-import { DecodePromptPanel } from "@/components/DecodePromptPanel";
+import { DecodeHistoryModals, DecodeTabContent } from "@/components/DecodeTabContent";
 import { AiConfigModal } from "@/components/AiConfigModal";
-import { SharePoster } from "@/components/SharePoster";
-import { UniverseModelLibraryPanel } from "@/components/UniverseModelLibraryPanel";
+import { ShareCardModal } from "@/components/ShareCardModal";
+import { ResultTabSection } from "@/components/ResultTabSection";
+import { SettingsModals } from "@/components/SettingsModals";
+import { DivinationHistoryModals } from "@/components/DivinationHistoryModals";
+import { InputTabSection } from "@/components/InputTabSection";
+import { ComputingTabSection } from "@/components/ComputingTabSection";
 import { UniverseModelViz } from "@/components/UniverseModelViz";
+import { useShareCard } from "@/hooks/useShareCard";
+import { ABOUT_ALGORITHM_MARKDOWN } from "@/content/aboutAlgorithm";
 import type { UniverseModelV1 } from "@/types/universeModel";
 import type { DivinationExtras, DivinationResult, DivinationTraceEvent } from "@/utils/divinationEngine";
 import { divineWithTrace } from "@/utils/divinationEngine";
 import { streamDecode } from "@/utils/decodeLlmClient";
-import { buildFormulaData, type FormulaParam, type FormulaPolicy } from "@/utils/formulaEngine";
-import { copyPngToClipboard, downloadBlob, type ShareCardTemplate } from "@/utils/shareCard";
+import { buildFormulaData } from "@/utils/formulaEngine";
+import { buildFormulaMarkdown, buildProgressiveParams, buildResultLatex, buildScienceMarkdown } from "@/utils/formulaPresentation";
+import { parseDatetimeLocalValue, toDatetimeLocalValue, formatIsoMinute } from "@/utils/guaDate";
+import { clamp01, clamp11, hashStr32, hex8, meanStd, mix32, randU32 } from "@/utils/guaMath";
+import { downloadJson, safeJsonParse } from "@/utils/guaJson";
+import {
+  collectPassiveObservables,
+  computeDashboardMetrics,
+  computeHistoryPrior16,
+  defaultPolicyFromTheta,
+  deriveFormulaSeed,
+  initModel,
+  type EnhancedStateV1,
+  type HistoryFeedback,
+  type HistoryItemV1,
+} from "@/utils/guaModelLogic";
+import { normalizeLite } from "@/utils/guaText";
+import { buildLunarLines, streamLines } from "@/utils/lunarMarkdown";
+import { normalizeMarkdownLatexEscapes, previewFromMarkdown, unwrapOuterMarkdownFence } from "@/utils/markdownText";
 import {
   addUniverseModelItem,
   deleteUniverseModelItem,
@@ -66,35 +76,6 @@ type LlmConfigResponse = {
   models: LlmModelConfig[];
   defaults: { model: string; stream: boolean; thinking: boolean };
   warnings?: string[];
-};
-
-type EnhancedStateV1 = {
-  v: 1;
-  enabled: boolean;
-  geo: "unknown" | "granted" | "denied" | "error";
-  motion: "unknown" | "granted" | "denied" | "error";
-  lastGeo?: { lat: number; lon: number; acc: number };
-  lastMotion?: { a: number; b: number; g: number };
-};
-
-type HistoryFeedback = -1 | 0 | 1;
-
-type HistoryItemV1 = {
-  v: 1;
-  id: string;
-  createdAt: number;
-  questionHash: number;
-  question: string;
-  datetimeISO: string;
-  nicknameHash: number;
-  nickname: string;
-  score: number;
-  signature?: string;
-  root?: string;
-  formulaLatex?: string;
-  omega?: string;
-  features16: number[];
-  feedback: HistoryFeedback;
 };
 
 type DecodeContextRefV1 =
@@ -131,333 +112,12 @@ type DecodeAiHistoryItemV1 = {
 type SettingsHelpTopic = "status" | "score" | "theta";
 type ModelVizMode = "mesh" | "flow" | "hud";
 
-function toDatetimeLocalValue(date: Date) {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-
-function parseDatetimeLocalValue(value: string) {
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return new Date(0);
-  return d;
-}
-
-function mix32(seed: number, n: number) {
-  let x = (seed ^ n) >>> 0;
-  x = Math.imul(x ^ (x >>> 16), 0x7feb352d) >>> 0;
-  x = Math.imul(x ^ (x >>> 15), 0x846ca68b) >>> 0;
-  x = (x ^ (x >>> 16)) >>> 0;
-  return x >>> 0;
-}
-
 const MODEL_KEY = "gua.universeModel.v1";
 const ENHANCED_KEY = "gua.universeEnhanced.v1";
 const HISTORY_KEY = "gua.history.v1";
 const DECODE_PREFIX = "gua.decodePacket.v1:";
 const DECODE_OUTPUT_KEY = "gua.decodeOutput.v1";
 const DECODE_AI_HISTORY_KEY = "gua.decodeAiHistory.v1";
-
-function clamp01(n: number) {
-  if (n < 0) return 0;
-  if (n > 1) return 1;
-  return n;
-}
-
-function clamp11(n: number) {
-  if (n < -1) return -1;
-  if (n > 1) return 1;
-  return n;
-}
-
-function meanStd(values: number[]) {
-  if (values.length <= 0) return { mean: 0, std: 0 };
-  const mean = values.reduce((a, b) => a + b, 0) / values.length;
-  const std = Math.sqrt(values.reduce((acc, x) => acc + (x - mean) * (x - mean), 0) / values.length);
-  return { mean, std };
-}
-
-function hex8(n: number) {
-  return (n >>> 0).toString(16).padStart(8, "0");
-}
-
-function randU32() {
-  try {
-    const a = new Uint32Array(1);
-    crypto.getRandomValues(a);
-    return a[0] >>> 0;
-  } catch {
-    return (mix32(0x12345678, Date.now() >>> 0) ^ mix32(0x9e3779b9, performance.now() >>> 0)) >>> 0;
-  }
-}
-
-function hashStr32(s: string) {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < s.length; i += 1) {
-    h = mix32(h, s.charCodeAt(i));
-  }
-  return h >>> 0;
-}
-
-function safeJsonParse<T>(raw: string | null): T | null {
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as T;
-  } catch {
-    return null;
-  }
-}
-
-function normalizeLite(s: string) {
-  return s.trim().replace(/\s+/g, " ");
-}
-
-function formatIsoMinute(value: string | number) {
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "—";
-  const iso = d.toISOString();
-  return `${iso.slice(0, 10)} ${iso.slice(11, 16)}Z`;
-}
-
-function computeHistoryPrior16(history: HistoryItemV1[]) {
-  const acc = Array.from({ length: 16 }, () => 0);
-  let sumW = 0;
-  for (const item of history) {
-    const score01 = clamp01(Number(item.score ?? 0) / 100);
-    const omegaFinite =
-      typeof item.omega === "string" && item.omega.length > 0 && !item.omega.includes("\\infty") && !item.omega.includes("∞");
-    const quality01 = clamp01(0.15 + score01 * 0.65 + (omegaFinite ? 0.2 : 0));
-    let w = 0.08 + quality01 * 0.92;
-    if (item.feedback === 1) w *= 1.25;
-    if (item.feedback === -1) w *= 0.55;
-    w = Math.max(0.02, Math.min(1.5, w));
-    if (!item.features16 || item.features16.length !== 16) continue;
-    sumW += w;
-    for (let i = 0; i < 16; i += 1) acc[i] = (acc[i] ?? 0) + clamp01(Number(item.features16[i])) * w;
-  }
-  if (sumW <= 0) return null;
-  return acc.map((x) => clamp01(x / sumW));
-}
-
-function computeDashboardMetrics(model: UniverseModelV1 | null, history: HistoryItemV1[], enhanced: EnhancedStateV1) {
-  const recent = history.slice(0, 20);
-  const scores = recent.map((x) => (Number.isFinite(x.score) ? x.score : 0));
-  const scoreMean = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
-  const scoreStd = scores.length
-    ? Math.sqrt(scores.reduce((acc, s) => acc + (s - scoreMean) * (s - scoreMean), 0) / scores.length)
-    : 0;
-
-  const omegaFiniteRatio01 = recent.length
-    ? recent.filter((x) => typeof x.omega === "string" && x.omega.length > 0 && !x.omega.includes("\\infty")).length / recent.length
-    : 0;
-
-  const feedbackBias = recent.length ? recent.reduce((acc, x) => acc + (x.feedback ?? 0), 0) / recent.length : 0;
-  const likedFromHistory = recent.filter((x) => x.feedback === 1).length;
-  const totalFromHistory = recent.filter((x) => x.feedback !== 0).length;
-
-  const likesRatio01 = model
-    ? model.likes.total
-      ? model.likes.liked / model.likes.total
-      : totalFromHistory
-        ? likedFromHistory / totalFromHistory
-        : 0
-    : totalFromHistory
-      ? likedFromHistory / totalFromHistory
-      : 0;
-
-  const theta16 = model?.theta16?.length === 16 ? model.theta16.map((x) => clamp01(Number(x))) : Array.from({ length: 16 }, () => 0.5);
-  const sumTheta = theta16.reduce((acc, v) => acc + Math.max(0, v), 0) || 1;
-  const p = theta16.map((v) => Math.max(0, v) / sumTheta);
-  const h = p.reduce((acc, pi) => (pi > 1e-12 ? acc - pi * Math.log2(pi) : acc), 0);
-  const thetaEntropy01 = clamp01(h / (Math.log2(p.length || 1) || 1));
-  const thetaStability01 = clamp01(1 - thetaEntropy01);
-
-  const recentSignature =
-    (typeof history[0]?.signature === "string" && history[0].signature) ||
-    (typeof model?.salt === "number" ? hex8(model.salt) : null);
-
-  return {
-    runCount: model?.runCount ?? 0,
-    progress01: clamp01((model?.runCount ?? 0) / 120),
-    likesRatio01: clamp01(likesRatio01),
-    scoreMean,
-    scoreStd,
-    omegaFiniteRatio01: clamp01(omegaFiniteRatio01),
-    feedbackBias: Math.max(-1, Math.min(1, feedbackBias)),
-    feedbackCounts: {
-      liked: recent.filter((x) => x.feedback === 1).length,
-      disliked: recent.filter((x) => x.feedback === -1).length,
-      total: recent.length,
-    },
-    theta16,
-    thetaStability01,
-    enhancedStatus: {
-      enabled: Boolean(enhanced.enabled),
-      geo: enhanced.geo,
-      motion: enhanced.motion,
-      hasLastGeo: Boolean(enhanced.lastGeo),
-      hasLastMotion: Boolean(enhanced.lastMotion),
-    },
-    recentSignature,
-  };
-}
-
-function defaultPolicyFromTheta(theta16: number[], runCount: number, likedRatio: number): FormulaPolicy {
-  const t = (i: number) => clamp01(theta16[i] ?? 0.5);
-  const settle = clamp01(runCount / 80);
-  const likeBoost = clamp01(likedRatio);
-  const pFrac = clamp01(0.22 - settle * 0.1 + (t(9) - 0.5) * 0.06);
-  const pPow = clamp01(0.2 - settle * 0.06 + (t(10) - 0.5) * 0.06);
-  const pFunc = clamp01(0.2 - settle * 0.08 + (t(11) - 0.5) * 0.06);
-  const pOp = clamp01(1 - (pFrac + pPow + pFunc));
-  const shuffleP = clamp01(0.38 - settle * 0.22 - likeBoost * 0.12 + (t(12) - 0.5) * 0.08);
-
-  const opsW = [
-    clamp01(0.9 + (t(13) - 0.5) * 0.5),
-    clamp01(0.9 + (t(14) - 0.5) * 0.5),
-    clamp01(0.9 + (t(15) - 0.5) * 0.5),
-  ];
-  const funcsW = [
-    clamp01(0.9 + (t(0) - 0.5) * 0.6),
-    clamp01(0.9 + (t(1) - 0.5) * 0.6),
-    clamp01(0.9 + (t(2) - 0.5) * 0.6),
-    clamp01(0.9 + (t(3) - 0.5) * 0.6),
-    clamp01(0.9 + (t(4) - 0.5) * 0.6),
-  ];
-
-  const constMin = Math.max(1, Math.round(2 - settle + (t(5) - 0.5) * 2));
-  const constMax = Math.max(constMin, Math.round(6 - settle * 2 + (t(6) - 0.5) * 3));
-
-  return {
-    pOp,
-    pFrac,
-    pPow,
-    pFunc,
-    opsW,
-    funcsW,
-    constMin,
-    constMax,
-    shuffleP,
-  };
-}
-
-function initModel(): UniverseModelV1 {
-  const theta16 = Array.from({ length: 16 }, () => 0.5);
-  const likes = { total: 0, liked: 0 };
-  const policy = defaultPolicyFromTheta(theta16, 0, 0);
-  return {
-    v: 1,
-    salt: randU32(),
-    runCount: 0,
-    theta16,
-    policy,
-    likes,
-    updatedAt: Date.now(),
-  };
-}
-
-function deriveFormulaSeed(entropy: number, model: UniverseModelV1, obsHash: number) {
-  const settle = clamp01(model.runCount / 96);
-  const bucket = Math.max(1, Math.floor(1 + settle * 9));
-  const drift = mix32(model.salt, Math.floor(model.runCount / bucket));
-  const thetaHash = model.theta16.reduce((acc, v, i) => mix32(acc, (Math.round(clamp01(v) * 1e6) ^ (i * 131)) >>> 0), 0x9e3779b9);
-  const h = mix32(mix32(entropy, obsHash), mix32(drift, thetaHash));
-  return h >>> 0;
-}
-
-function collectPassiveObservables() {
-  const nav = typeof navigator !== "undefined" ? navigator : null;
-  const scr = typeof screen !== "undefined" ? screen : null;
-  const tz = -new Date().getTimezoneOffset() / 60;
-  const dpr = typeof window !== "undefined" ? window.devicePixelRatio ?? 1 : 1;
-  const lang = nav?.language ?? "unknown";
-  const hc = (nav as unknown as { hardwareConcurrency?: number })?.hardwareConcurrency ?? 4;
-  const dm = (nav as unknown as { deviceMemory?: number })?.deviceMemory ?? 4;
-  const w = scr?.width ?? 0;
-  const h = scr?.height ?? 0;
-  const prefDark = typeof window !== "undefined" ? (window.matchMedia?.("(prefers-color-scheme: dark)")?.matches ?? false) : false;
-  const prefReduce = typeof window !== "undefined" ? (window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ?? false) : false;
-  const conn = (nav as unknown as { connection?: { effectiveType?: string; rtt?: number; downlink?: number } })?.connection;
-  const effectiveType = conn?.effectiveType ?? "unknown";
-  const rtt = conn?.rtt ?? 0;
-  const downlink = conn?.downlink ?? 0;
-
-  const fp8 = [
-    clamp01((tz + 12) / 26),
-    clamp01(Math.log2(Math.max(1, hc)) / 6),
-    clamp01(Math.max(0, Math.min(16, dm)) / 16),
-    clamp01(Math.log2(Math.max(1, w * h)) / 24),
-    clamp01(Math.max(0.5, Math.min(3, dpr)) / 3),
-    clamp01(prefDark ? 0.78 : 0.22),
-    clamp01(prefReduce ? 0.78 : 0.22),
-    clamp01(effectiveType === "4g" ? 0.9 : effectiveType === "3g" ? 0.65 : effectiveType === "2g" ? 0.45 : 0.55),
-  ];
-
-  let hash = 0x811c9dc5;
-  hash = mix32(hash, Math.round(tz * 1000));
-  hash = mix32(hash, Math.round(dpr * 1000));
-  hash = mix32(hash, hc >>> 0);
-  hash = mix32(hash, Math.round(dm * 1000));
-  hash = mix32(hash, (w << 16) ^ h);
-  hash = mix32(hash, prefDark ? 1 : 0);
-  hash = mix32(hash, prefReduce ? 1 : 0);
-  hash = mix32(hash, hashStr32(effectiveType));
-  hash = mix32(hash, Math.round(rtt * 10));
-  hash = mix32(hash, Math.round(downlink * 100));
-  hash = mix32(hash, hashStr32(lang));
-
-  return { hash: hash >>> 0, fp8 };
-}
-
-function downloadJson(filename: string, data: unknown) {
-  const text = JSON.stringify(data, null, 2);
-  const blob = new Blob([text], { type: "application/json;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-function unwrapOuterMarkdownFence(markdown: string) {
-  const s = typeof markdown === "string" ? markdown.trim() : "";
-  const m = s.match(/^```(?:markdown|md)?\s*\n([\s\S]*?)\n```$/);
-  if (m && typeof m[1] === "string") return m[1];
-  return typeof markdown === "string" ? markdown : "";
-}
-
-function normalizeMarkdownLatexEscapes(markdown: string) {
-  return markdown.replace(
-    /\\\\(left|right|Omega|Phi|alpha|beta|gamma|epsilon|sigma|theta|pi|infty|lim|to|times|cdot|tanh|sin|cos|log|exp|frac|sqrt|hat)\b/g,
-    "\\$1",
-  );
-}
-
-function previewFromMarkdown(markdown: string) {
-  const raw = unwrapOuterMarkdownFence(markdown || "");
-  const lines = raw.split("\n").map((x) => x.trim());
-  const line = lines.find((x) => x && !x.startsWith("#") && !x.startsWith(">")) ?? "";
-  if (!line) return "";
-  return line.length > 120 ? `${line.slice(0, 120)}…` : line;
-}
-
-function extractSectionConclusionFromMarkdown(markdown: string, sectionTitle: string) {
-  const raw = unwrapOuterMarkdownFence(markdown || "");
-  const lines = raw.split("\n");
-  const start = lines.findIndex((l) => l.trim() === `## ${sectionTitle}`);
-  if (start < 0) return previewFromMarkdown(raw);
-  const end = lines.findIndex((l, i) => i > start && l.trim().startsWith("## "));
-  const slice = lines.slice(start, end > start ? end : undefined);
-  const idx = slice.findIndex((l) => l.trim().startsWith("### 结论"));
-  if (idx < 0) return previewFromMarkdown(slice.join("\n"));
-  for (let i = idx + 1; i < Math.min(slice.length, idx + 12); i += 1) {
-    const t = slice[i]?.trim() ?? "";
-    if (!t) continue;
-    if (t.startsWith("#") || t.startsWith(">")) continue;
-    return t.length > 220 ? `${t.slice(0, 220)}…` : t;
-  }
-  return previewFromMarkdown(slice.join("\n"));
-}
 
 export default function CyberGuaApp() {
   const [runPhase, setRunPhase] = useState<Phase>("input");
@@ -514,15 +174,6 @@ export default function CyberGuaApp() {
   const [decodeThinkingEnabled, setDecodeThinkingEnabled] = useState(true);
   const [decodeThinkingSupported, setDecodeThinkingSupported] = useState(false);
   const [aiConfigOpen, setAiConfigOpen] = useState(false);
-  const [shareCardBusy, setShareCardBusy] = useState(false);
-  const [shareCardError, setShareCardError] = useState<string | null>(null);
-  const [shareCardOpen, setShareCardOpen] = useState(false);
-  const [shareCardTemplate, setShareCardTemplate] = useState<ShareCardTemplate>("divination_decode");
-  const [shareCardPreviewUrl, setShareCardPreviewUrl] = useState<string | null>(null);
-  const [shareCardBlob, setShareCardBlob] = useState<Blob | null>(null);
-  const [sharePosterQrDataUrl, setSharePosterQrDataUrl] = useState<string>("");
-  const [shareCardBusyText, setShareCardBusyText] = useState<string>("");
-  const [shareCardBusyPct, setShareCardBusyPct] = useState<number>(0);
   const [computeSpeedMul, setComputeSpeedMul] = useState(1);
   const decodeAbortRef = useRef<AbortController | null>(null);
   const decodeOutRef = useRef<HTMLDivElement | null>(null);
@@ -538,9 +189,6 @@ export default function CyberGuaApp() {
   const decodeReasoningOpenRef = useRef(false);
   const decodeReasoningManualRef = useRef(false);
   const decodeAutoCollapseArmedRef = useRef(false);
-  const shareCardCacheRef = useRef(new Map<ShareCardTemplate, { key: string; blob: Blob; url: string }>());
-  const sharePosterRef = useRef<HTMLDivElement | null>(null);
-  const shareCardOpenedAtRef = useRef<string>(new Date().toISOString());
 
   const runIdRef = useRef(0);
   const modelRef = useRef<UniverseModelV1 | null>(null);
@@ -554,19 +202,31 @@ export default function CyberGuaApp() {
 
   function setEnhancedPersist(next: EnhancedStateV1) {
     setEnhanced(next);
-    localStorage.setItem(ENHANCED_KEY, JSON.stringify(next));
+    try {
+      localStorage.setItem(ENHANCED_KEY, JSON.stringify(next));
+    } catch {
+      void 0;
+    }
   }
 
   function setHistoryPersist(next: HistoryItemV1[]) {
     setHistory(next);
     historyRef.current = next;
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
+    try {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
+    } catch {
+      void 0;
+    }
   }
 
   const setDecodeAiHistoryPersist = useCallback((next: DecodeAiHistoryItemV1[]) => {
     setDecodeAiHistory(next);
     decodeAiHistoryRef.current = next;
-    localStorage.setItem(DECODE_AI_HISTORY_KEY, JSON.stringify(next));
+    try {
+      localStorage.setItem(DECODE_AI_HISTORY_KEY, JSON.stringify(next));
+    } catch {
+      void 0;
+    }
   }, []);
 
   const entropyRef = useRef({
@@ -620,7 +280,11 @@ export default function CyberGuaApp() {
     const activeItem = lib.items.find((x) => x.id === lib.activeId) ?? lib.items[0]!;
     const activeModel = normalizeModel(activeItem.model);
 
-    localStorage.setItem(MODEL_KEY, JSON.stringify(activeModel));
+    try {
+      localStorage.setItem(MODEL_KEY, JSON.stringify(activeModel));
+    } catch {
+      void 0;
+    }
     queueMicrotask(() => {
       setModel(activeModel);
       modelRef.current = activeModel;
@@ -998,7 +662,11 @@ export default function CyberGuaApp() {
   const persistActiveModel = (nextModel: UniverseModelV1) => {
     setModel(nextModel);
     modelRef.current = nextModel;
-    localStorage.setItem(MODEL_KEY, JSON.stringify(nextModel));
+    try {
+      localStorage.setItem(MODEL_KEY, JSON.stringify(nextModel));
+    } catch {
+      void 0;
+    }
     const currentLib = modelLibraryRef.current ?? loadUniverseModelLibrary();
     if (!currentLib) return;
     persistLibrary(updateActiveModel(currentLib, nextModel));
@@ -1009,7 +677,11 @@ export default function CyberGuaApp() {
     if (active) {
       setModel(active.model);
       modelRef.current = active.model;
-      localStorage.setItem(MODEL_KEY, JSON.stringify(active.model));
+      try {
+        localStorage.setItem(MODEL_KEY, JSON.stringify(active.model));
+      } catch {
+        void 0;
+      }
     }
     persistLibrary(nextLib);
   };
@@ -1221,36 +893,50 @@ export default function CyberGuaApp() {
         updatedAt: Date.now(),
       };
       persistActiveModel(nextModel);
-      localStorage.setItem(
-        `${DECODE_PREFIX}${id}`,
-        JSON.stringify({
-          v: 1,
-          hid: id,
-          createdAt: record.createdAt,
-          input: {
-            question: record.question,
-            nickname: record.nickname ? record.nickname : undefined,
-            datetimeISO: record.datetimeISO,
-          },
-          result: {
-            score: res.score,
-            signature: res.signature,
-            omega: omegaText,
-            formulaLatex,
-          },
-          carry: res.carry,
-          model: { salt: currentModel.salt, runCount: currentModel.runCount, theta16: effectiveTheta16, policy: currentModel.policy },
-          obs: { hash: obsHash, fp8: obsFp8, enhanced: enhanced.enabled ? 1 : 0 },
-          trace: steps,
-          extra: {
-            entropy,
-            rootDigest: root ? String(root) : undefined,
-            phases,
-            formula: { steps: formulaDataFinal.steps, params: formulaDataFinal.params },
-            features16: fv16,
-          },
-        }),
-      );
+      try {
+        localStorage.setItem(
+          `${DECODE_PREFIX}${id}`,
+          JSON.stringify({
+            v: 1,
+            hid: id,
+            createdAt: record.createdAt,
+            input: {
+              question: record.question,
+              nickname: record.nickname ? record.nickname : undefined,
+              datetimeISO: record.datetimeISO,
+            },
+            result: {
+              score: res.score,
+              signature: res.signature,
+              omega: omegaText,
+              formulaLatex,
+            },
+            carry: res.carry,
+            model: { salt: currentModel.salt, runCount: currentModel.runCount, theta16: effectiveTheta16, policy: currentModel.policy },
+            obs: { hash: obsHash, fp8: obsFp8, enhanced: enhanced.enabled ? 1 : 0 },
+            trace: steps,
+            extra: {
+              entropy,
+              rootDigest: root ? String(root) : undefined,
+              phases,
+              formula: { steps: formulaDataFinal.steps, params: formulaDataFinal.params },
+              features16: fv16,
+            },
+          }),
+        );
+      } catch {
+        void 0;
+      }
+      const droppedHistory = [record, ...historyRef.current].slice(60).map((x) => x.id);
+      if (droppedHistory.length > 0) {
+        droppedHistory.forEach((hid) => {
+          try {
+            localStorage.removeItem(`${DECODE_PREFIX}${hid}`);
+          } catch {
+            void 0;
+          }
+        });
+      }
       const nextHistory = [record, ...historyRef.current].slice(0, 60);
       setHistoryPersist(nextHistory);
       lastHistoryIdRef.current = id;
@@ -1322,7 +1008,11 @@ export default function CyberGuaApp() {
     const fallbackId = next[0]?.id ?? null;
     if (lastHistoryIdRef.current === id) lastHistoryIdRef.current = fallbackId;
     if (lastHistoryId === id) setLastHistoryId(fallbackId);
-    localStorage.removeItem(`${DECODE_PREFIX}${id}`);
+    try {
+      localStorage.removeItem(`${DECODE_PREFIX}${id}`);
+    } catch {
+      void 0;
+    }
   };
 
   const onDislike = () => {
@@ -2099,312 +1789,16 @@ export default function CyberGuaApp() {
     return decodeAiHistory.find((x) => x.id === decodeHistoryDetailId) ?? null;
   }, [decodeAiHistory, decodeHistoryDetailId]);
 
-  const shareCardQrUrl = useMemo(() => {
-    const envUrl = (process.env.NEXT_PUBLIC_SITE_URL ?? "").trim();
-    if (envUrl) return envUrl;
-    if (typeof window !== "undefined" && window.location?.origin) return window.location.origin;
-    return "http://localhost:3000";
-  }, []);
-
-  useEffect(() => {
-    if (!shareCardOpen) return;
-    void (async () => {
-      try {
-        const url = await QRCode.toDataURL(shareCardQrUrl, {
-          width: 256,
-          margin: 0,
-          errorCorrectionLevel: "M",
-          color: { dark: "#0b0f17", light: "#ffffff" },
-        });
-        setSharePosterQrDataUrl(url);
-      } catch {
-        setSharePosterQrDataUrl("");
-      }
-    })();
-  }, [shareCardOpen, shareCardQrUrl]);
-
-  useEffect(() => {
-    if (!shareCardBusy) {
-      setShareCardBusyText("");
-      setShareCardBusyPct(0);
-      return;
-    }
-    const steps = ["排版中…", "渲染中…", "合成 PNG…", "写入预览…"];
-    let i = 0;
-    setShareCardBusyText(steps[0] ?? "生成中…");
-    setShareCardBusyPct(12);
-    const id = window.setInterval(() => {
-      i += 1;
-      setShareCardBusyText(steps[i % steps.length] ?? "生成中…");
-      setShareCardBusyPct((v) => {
-        const next = v + 9 + Math.round(Math.random() * 10);
-        return Math.min(95, Math.max(v, next));
-      });
-    }, 650);
-    return () => window.clearInterval(id);
-  }, [shareCardBusy]);
-
-  const shareCardCopySupported =
-    typeof window !== "undefined" && typeof navigator?.clipboard?.write === "function" && typeof ClipboardItem !== "undefined";
-
-  const shareCardDefaultTemplate = useMemo<ShareCardTemplate>(() => {
-    if (decodeMode === "llm_direct") return "ai_direct";
-    if (decodeMode === "model_current") return "model_snapshot";
-    if (!decodePacket) return "model_snapshot";
-    return "divination_decode";
-  }, [decodeMode, decodePacket]);
-
-  useEffect(() => {
-    if (!shareCardOpen) return;
-    setShareCardTemplate(shareCardDefaultTemplate);
-  }, [shareCardDefaultTemplate, shareCardOpen]);
-
-  const shareCardProps = useMemo<{
-    template: ShareCardTemplate;
-    modeLabel: string;
-    localTimeText: string;
-    utcTimeText: string;
-    qrUrlText: string;
-    headline: string;
-    question?: string;
-    conclusionQa?: string;
-    conclusionInsight?: string;
-    score?: number;
-    omega?: string;
-    signature?: string;
-    rootDigest?: string;
-    formulaLatex?: string;
-    runCount?: number;
-    likedRatio?: number;
-    recent?: Array<{ question: string; score: number; omega?: string; signature?: string }>;
-    model?: UniverseModelV1 | null;
-    theta16?: number[];
-  }>(() => {
-    const pkt = decodePacket as
-      | {
-          hid?: unknown;
-          input?: { question?: unknown; datetimeISO?: unknown };
-          payload?: { input?: { question?: unknown; datetimeISO?: unknown } };
-          result?: { signature?: unknown; omega?: unknown; formulaLatex?: unknown };
-          recent?: Array<{ question?: unknown; score?: unknown; omega?: unknown; signature?: unknown }>;
-          model?: UniverseModelV1 | { runCount?: unknown; likes?: { total?: unknown; liked?: unknown } } | null;
-        }
-      | null;
-    const input = pkt?.input ?? pkt?.payload?.input ?? null;
-    const createdAtISO = typeof input?.datetimeISO === "string" ? input.datetimeISO : shareCardOpenedAtRef.current;
-    const createdAt = new Date(createdAtISO);
-    const safeDate = Number.isFinite(createdAt.getTime()) ? createdAt : new Date();
-    const localTimeText = (() => {
-      try {
-        const s = new Intl.DateTimeFormat("zh-CN", {
-          year: "numeric",
-          month: "2-digit",
-          day: "2-digit",
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit",
-          hour12: false,
-          timeZoneName: "short",
-        }).format(safeDate);
-        return `Local ${s}`;
-      } catch {
-        return `Local ${safeDate.toLocaleString()}`;
-      }
-    })();
-    const utcISO = safeDate.toISOString().replace(".000Z", "Z");
-    const utcTimeText = `UTC ${utcISO.replace("T", " ")}`;
-    const baseQuestion =
-      question.trim() ||
-      decodeSummary?.questionText ||
-      (typeof input?.question === "string" ? input.question : "") ||
-      (decodeMode === "llm_direct" && directSource === "current" ? question.trim() : "");
-
-    const sigFromPacket = typeof pkt?.result?.signature === "string" ? pkt.result.signature : "";
-    const omegaFromPacket = typeof pkt?.result?.omega === "string" ? pkt.result.omega : "";
-    const formulaFromPacket = typeof pkt?.result?.formulaLatex === "string" ? pkt.result.formulaLatex : "";
-    const signature = decodeSummary?.sig || sigFromPacket || "—";
-    const omegaRaw = decodeSummary?.omega || omegaFromPacket || "";
-    const omega = omegaRaw && omegaRaw !== "—" ? omegaRaw : "\\square";
-    const score = decodeSummary?.score ?? 0;
-
-    const rootDigest =
-      typeof pkt?.hid === "string" ? (history.find((x) => x.id === pkt.hid)?.root ?? "") : "";
-
-    const qrUrlText = shareCardQrUrl.replace(/^https?:\/\//, "");
-    const modeLabel =
-      shareCardTemplate === "ai_direct" ? "AI 直推" : shareCardTemplate === "model_snapshot" ? "模型快照" : "推演解码";
-
-    if (shareCardTemplate === "ai_direct") {
-      const conclusionQa = extractSectionConclusionFromMarkdown(decodeAnswerMarkdown, "问题解答");
-      const conclusionInsight = extractSectionConclusionFromMarkdown(decodeAnswerMarkdown, "模型启示");
-      return {
-        template: "ai_direct" as const,
-        modeLabel,
-        localTimeText,
-        utcTimeText,
-        qrUrlText,
-        headline: "一句问题，得到可晒的模型解码。",
-        question: baseQuestion,
-        conclusionQa,
-        conclusionInsight,
-        score,
-        omega,
-        signature,
-        formulaLatex: formulaFromPacket || undefined,
-      };
-    }
-
-    if (shareCardTemplate === "model_snapshot") {
-      const m = (pkt?.model && typeof (pkt.model as { runCount?: unknown }).runCount !== "undefined" ? (pkt.model as UniverseModelV1) : null) ?? modelRef.current;
-      const runCount = Math.max(0, Math.trunc(Number(m?.runCount ?? decodeSummary?.runCount ?? 0)));
-      const total = Number(m?.likes?.total ?? NaN);
-      const liked = Number(m?.likes?.liked ?? NaN);
-      const likedRatio = total > 0 && Number.isFinite(liked) ? liked / total : undefined;
-      const sourceRecent = Array.isArray(pkt?.recent) ? pkt.recent : history.slice(0, 3);
-      const recent = sourceRecent.slice(0, 3).map((x) => ({
-        question: typeof (x as { question?: unknown }).question === "string" ? (x as { question: string }).question : "",
-        score: Number.isFinite(Number((x as { score?: unknown }).score)) ? Number((x as { score?: unknown }).score) : 0,
-        omega: typeof (x as { omega?: unknown }).omega === "string" ? ((x as { omega?: string }).omega as string) : undefined,
-        signature:
-          typeof (x as { signature?: unknown }).signature === "string" ? ((x as { signature?: string }).signature as string) : undefined,
-      }));
-      return {
-        template: "model_snapshot" as const,
-        modeLabel,
-        localTimeText,
-        utcTimeText,
-        qrUrlText,
-        headline: "该视觉由本机模型参数确定性生成：导入同一模型到其他设备会呈现一致形态。",
-        runCount,
-        likedRatio,
-        recent,
-        model: m ?? null,
-        theta16: Array.isArray(m?.theta16) ? m!.theta16 : [],
-      };
-    }
-
-    return {
-      template: "divination_decode" as const,
-      modeLabel,
-      localTimeText,
-      utcTimeText,
-      qrUrlText,
-      headline: "可复算 · 可追溯 · 本机宇宙常量",
-      question: baseQuestion,
-      conclusionQa: extractSectionConclusionFromMarkdown(decodeAnswerMarkdown, "问题解答"),
-      conclusionInsight: extractSectionConclusionFromMarkdown(decodeAnswerMarkdown, "模型启示"),
-      score,
-      omega,
-      signature,
-      formulaLatex: formulaFromPacket || undefined,
-      rootDigest: rootDigest || undefined,
-    };
-  }, [
-    decodeAnswerMarkdown,
+  const shareCard = useShareCard({
     decodeMode,
-    decodeSummary,
     decodePacket,
     directSource,
-    history,
     question,
-    shareCardQrUrl,
-    shareCardTemplate,
-  ]);
-
-  const shareCardPayload = useMemo(() => {
-    return { ...shareCardProps, qrUrl: shareCardQrUrl };
-  }, [shareCardProps, shareCardQrUrl]);
-
-  const shareCardPayloadKey = useMemo(() => {
-    try {
-      return JSON.stringify(shareCardPayload);
-    } catch {
-      return `${shareCardPayload.template}:${Date.now()}`;
-    }
-  }, [shareCardPayload]);
-
-  const generateShareCard = useCallback(async () => {
-    if (shareCardBusy) return;
-    setShareCardError(null);
-    setShareCardBusy(true);
-    try {
-      if (!sharePosterQrDataUrl) throw new Error("二维码未就绪：请稍后重试。");
-      const node = sharePosterRef.current;
-      if (!node) throw new Error("海报节点未就绪：请稍后重试。");
-      const fonts = (document as unknown as { fonts?: { ready?: Promise<void> } }).fonts;
-      if (fonts?.ready) await fonts.ready;
-      await new Promise<void>((resolve) => {
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-      });
-      const canvas = await html2canvas(node, { backgroundColor: null, scale: 2, useCORS: true, logging: false, removeContainer: true });
-      const blob = await new Promise<Blob>((resolve, reject) => {
-        canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("生成失败：请重试。"))), "image/png");
-      });
-      const nextUrl = URL.createObjectURL(blob);
-      const prevCached = shareCardCacheRef.current.get(shareCardTemplate);
-      if (prevCached?.url) URL.revokeObjectURL(prevCached.url);
-      setShareCardBlob(blob);
-      setShareCardPreviewUrl(nextUrl);
-      shareCardCacheRef.current.set(shareCardTemplate, { key: shareCardPayloadKey, blob, url: nextUrl });
-    } catch (e) {
-      setShareCardBlob(null);
-      setShareCardPreviewUrl(null);
-      setShareCardError(e instanceof Error ? e.message : "生成分享海报失败。");
-    } finally {
-      setShareCardBusy(false);
-    }
-  }, [
-    shareCardBusy,
-    shareCardPayloadKey,
-    shareCardTemplate,
-    sharePosterQrDataUrl,
-  ]);
-
-  useEffect(() => {
-    if (!shareCardOpen) return;
-    setShareCardError(null);
-    const cached = shareCardCacheRef.current.get(shareCardTemplate);
-    if (cached) {
-      setShareCardBlob(cached.blob);
-      setShareCardPreviewUrl(cached.url);
-      return;
-    }
-    setShareCardBlob(null);
-    setShareCardPreviewUrl(null);
-  }, [shareCardOpen, shareCardTemplate]);
-
-  const onShareCardOpen = useCallback(() => {
-    shareCardOpenedAtRef.current = new Date().toISOString();
-    setShareCardError(null);
-    setShareCardOpen(true);
-  }, []);
-
-  const onShareCardClose = useCallback(() => {
-    shareCardCacheRef.current.forEach((v) => {
-      if (v.url) URL.revokeObjectURL(v.url);
-    });
-    shareCardCacheRef.current.clear();
-    setShareCardOpen(false);
-    setShareCardError(null);
-    setShareCardBlob(null);
-    setShareCardPreviewUrl(null);
-    setShareCardBusy(false);
-    setShareCardBusyText("");
-    setShareCardBusyPct(0);
-  }, []);
-
-  const onShareCardDownload = useCallback(() => {
-    if (!shareCardBlob) return;
-    const sig = (shareCardProps.signature || "gua").replace(/[^\w-]+/g, "").slice(0, 12) || "gua";
-    downloadBlob(`gua-share-card-${shareCardProps.template}-${sig}-${Date.now()}.png`, shareCardBlob);
-  }, [shareCardBlob, shareCardProps.signature, shareCardProps.template]);
-
-  const onShareCardCopy = useCallback(async () => {
-    if (!shareCardCopySupported) return;
-    if (!shareCardBlob) return;
-    const ok = await copyPngToClipboard(shareCardBlob);
-    if (!ok) setShareCardError("当前浏览器不支持复制图片到剪贴板。");
-  }, [shareCardBlob, shareCardCopySupported]);
+    history,
+    modelRef,
+    decodeAnswerMarkdown,
+    decodeSummary,
+  });
 
   const decodeHistoryDetailContext = useMemo(() => {
     if (!decodeHistoryDetail) return null;
@@ -2649,7 +2043,7 @@ export default function CyberGuaApp() {
               <Button radius="xl" variant="default" onClick={onTerminate} disabled={!isRunning}>
                 终止
               </Button>
-              <Button radius="xl" variant="default" onClick={onShareCardOpen}>
+              <Button radius="xl" variant="default" onClick={shareCard.open}>
                 分享卡片
               </Button>
             </Group>
@@ -2681,308 +2075,107 @@ export default function CyberGuaApp() {
             </Group>
           </Group>
 
-          {activeTab === "input" ? (
-            <Paper radius="md" p="xl" className="gua-panel gua-panel-input">
-              <Stack gap="md">
-                <Group justify="space-between" align="center">
-                  <Text fw={600} className="gua-section-title">
-                    推演输入
-                  </Text>
-                  <Badge variant="light" color="gray" radius="md" className="gua-chip">
-                    步骤 1/3
-                  </Badge>
-                </Group>
-                <Text className="gua-section-sub">描述你的目标或问题。系统将结合本地观测与模型进行离线推演。</Text>
+          <InputTabSection
+            active={activeTab === "input"}
+            question={question}
+            setQuestion={(next) => setQuestion(next)}
+            datetimeValue={datetimeValue}
+            setDatetimeValue={(next) => setDatetimeValue(next)}
+            nickname={nickname}
+            setNickname={(next) => setNickname(next)}
+            shortcutHint={shortcutHint}
+            canStart={canStart}
+            onStart={onStart}
+            modelRunCount={model?.runCount ?? null}
+            error={error}
+          />
 
-                <Textarea
-                  label="目标/问题"
-                  placeholder="例如：评估本周上线方案的稳定度风险"
-                  value={question}
-                  onChange={(e) => setQuestion(e.currentTarget.value)}
-                  autosize
-                  minRows={3}
-                  maxRows={6}
-                  maxLength={120}
-                  description={
-                    <Text component="span" fz="xs" className="gua-hint">
-                      {Math.min(120, question.length)}/120 · {shortcutHint}
-                    </Text>
-                  }
-                  onKeyDown={(e) => {
-                    if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && canStart) onStart();
-                  }}
-                />
+          <ComputingTabSection
+            active={activeTab === "computing"}
+            hasData={trace.length > 0 || isRunning || formulaSeed !== null}
+            traceLength={trace.length}
+            traceVisible={traceVisible}
+            progressPct={progressPct}
+            isRunning={isRunning}
+            computeSpeedMul={computeSpeedMul}
+            onSpeedUp={() => {
+              setComputeSpeedMul((prev) => {
+                const next = Math.min(16, prev * 2);
+                const resolved = Number.isFinite(next) ? next : prev;
+                computeSpeedMulRef.current = resolved;
+                return resolved;
+              });
+            }}
+            onGoInput={() => setActiveTab("input")}
+            formulaMarkdown={formulaMarkdown}
+            progressiveParams={progressiveParams}
+            scienceMarkdown={scienceMarkdown}
+            lunarMarkdown={lunarMarkdown}
+          />
 
-                <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
-                  <TextInput
-                    label="参考时间"
-                    type="datetime-local"
-                    value={datetimeValue}
-                    onChange={(e) => setDatetimeValue(e.currentTarget.value)}
-                  />
-                  <TextInput
-                    label="标识（可选）"
-                    placeholder="例如：AB-方案-第3轮"
-                    value={nickname}
-                    onChange={(e) => setNickname(e.currentTarget.value)}
-                    maxLength={24}
-                  />
-                </SimpleGrid>
-                <Text fz="xs" c="dimmed">
-                  {model ? `本机已推演 ${model.runCount} 次。` : "本机模型载入中。"} 模型/历史/权限在设置里管理。
-                </Text>
-
-                {error ? (
-                  <Alert color="gray" variant="light" radius="md" className="gua-alert">
-                    {error}
-                  </Alert>
-                ) : null}
-              </Stack>
-            </Paper>
-          ) : null}
-
-          {activeTab === "computing" ? (
-            trace.length > 0 || isRunning || formulaSeed !== null ? (
-              <Stack gap="md">
-                <Paper radius="md" p="md" className="gua-panel">
-                  <Group justify="space-between" align="center" wrap="wrap" gap="sm">
-                    <Stack gap={2}>
-                      <Text fw={600} fz="sm">
-                        推演进行中
-                      </Text>
-                      <Text fz="xs" c="dimmed">
-                        {trace.length > 0 ? `${Math.min(traceVisible, trace.length)}/${trace.length}` : "采样中"} · {progressPct}%
-                      </Text>
-                    </Stack>
-                    <Group gap="xs" wrap="wrap" style={{ justifyContent: "flex-end", flex: "1 1 260px" }}>
-                      <Button
-                        radius="xl"
-                        variant="default"
-                        disabled={!isRunning || computeSpeedMul >= 16}
-                        onClick={() => {
-                          setComputeSpeedMul((prev) => {
-                            const next = Math.min(16, prev * 2);
-                            const resolved = Number.isFinite(next) ? next : prev;
-                            computeSpeedMulRef.current = resolved;
-                            return resolved;
-                          });
-                        }}
-                      >
-                        加速 ×{computeSpeedMul}
-                      </Button>
-                      <Box style={{ width: "min(240px, 100%)", flex: "1 1 160px" }}>
-                        <Progress value={progressPct} />
-                      </Box>
-                    </Group>
-                  </Group>
-                </Paper>
-                <StreamingPanels
-                  formulaMarkdown={formulaMarkdown}
-                  formulaParams={progressiveParams}
-                  scienceMarkdown={scienceMarkdown}
-                  lunarMarkdown={lunarMarkdown}
-                />
-              </Stack>
-            ) : (
-              <Paper radius="md" p="xl" className="gua-panel gua-panel-muted">
-                <Stack gap="sm">
-                  <Text fw={600} className="gua-section-title">
-                    暂无推演信息
-                  </Text>
-                  <Text className="gua-section-sub">请到「输入」页面起卦后，再来这里查看推演过程。</Text>
-                  <Group justify="flex-end">
-                    <Button radius="xl" variant="default" onClick={() => setActiveTab("input")}>
-                      去输入
-                    </Button>
-                  </Group>
-                </Stack>
-              </Paper>
-            )
-          ) : null}
-
-          {activeTab === "result" ? (
-            result && runPhase === "result" ? (
-              <Stack gap="md">
-                <StreamingPanels
-                  mode="resultOnly"
-                  formulaMarkdown={resultMarkdown}
-                  scienceMarkdown=""
-                  lunarMarkdown=""
-                />
-                <Paper radius="md" p="md" className="gua-panel">
-                  <Group justify="space-between" align="center" wrap="wrap" gap="sm">
-                    <Stack gap={2}>
-                      <Text fw={600} fz="sm">
-                        归一常量结果
-                      </Text>
-                      <Text fz="xs" c="dimmed">
-                        Score={result.score}{result.signature ? ` · ${result.signature.slice(0, 8)}` : ""}
-                      </Text>
-                    </Stack>
-                    <Group gap="xs" wrap="wrap" style={{ justifyContent: "flex-end" }}>
-                      <Button
-                        radius="xl"
-                        variant="default"
-                        onClick={() => {
-                          const id = lastHistoryIdRef.current;
-                          if (!id) return;
-                          setDecodeMode("result_current");
-                          setDirectSource("current");
-                          setActiveTab("decode");
-                        }}
-                        disabled={!lastHistoryId}
-                      >
-                        解码
-                      </Button>
-                    </Group>
-                  </Group>
-                </Paper>
-                <Paper radius="md" p="md" className="gua-panel">
-                  <Group justify="space-between" align="center" wrap="wrap" gap="sm">
-                    <Stack gap={2}>
-                      <Text fw={600} fz="sm">
-                        对于此次宇宙常量的推演，是否满意
-                      </Text>
-                      <Text fz="xs" c="dimmed">
-                        满意会加速本机模型收敛；不满意只记录为负反馈，降低后续参考权重。
-                      </Text>
-                    </Stack>
-                    <Group gap="xs" wrap="wrap" style={{ justifyContent: "flex-end" }}>
-                      <Button radius="xl" variant="default" onClick={onDislike} disabled={feedbackLocked}>
-                        不满意
-                      </Button>
-                      <Button radius="xl" onClick={onLike} disabled={feedbackLocked || !model}>
-                        满意
-                      </Button>
-                    </Group>
-                  </Group>
-                </Paper>
-              </Stack>
-            ) : (
-              <Paper radius="md" p="xl" className="gua-panel gua-panel-muted">
-                <Stack gap="sm">
-                  <Text fw={600} className="gua-section-title">
-                    暂无归一结果
-                  </Text>
-                  <Text className="gua-section-sub">请到「推演」等待完成，或回到「输入」重新起卦。</Text>
-                  <Group justify="flex-end">
-                    <Button radius="xl" variant="default" onClick={() => setActiveTab(isRunning || trace.length > 0 ? "computing" : "input")}>
-                      {isRunning || trace.length > 0 ? "去推演" : "去输入"}
-                    </Button>
-                  </Group>
-                </Stack>
-              </Paper>
-            )
-          ) : null}
+          <ResultTabSection
+            active={activeTab === "result"}
+            result={result}
+            runPhase={runPhase}
+            resultMarkdown={resultMarkdown}
+            isRunning={isRunning}
+            traceLength={trace.length}
+            lastHistoryId={lastHistoryId}
+            lastHistoryIdRef={lastHistoryIdRef}
+            onDecodeClick={() => {
+              setDecodeMode("result_current");
+              setDirectSource("current");
+              setActiveTab("decode");
+            }}
+            onDislike={onDislike}
+            onLike={onLike}
+            feedbackLocked={feedbackLocked}
+            model={model}
+            setActiveTab={setActiveTab}
+          />
 
           {activeTab === "decode" ? (
-            <Stack gap="md">
-              <DecodePromptPanel
-                decodeMode={decodeMode}
-                setDecodeMode={setDecodeMode}
-                directSource={directSource}
-                setDirectSource={setDirectSource}
-                decodeHistoryPickId={decodeHistoryPickId}
-                setDecodeHistoryPickId={setDecodeHistoryPickId}
-                history={history}
-                onBack={() => setActiveTab(result && runPhase === "result" ? "result" : "input")}
-                summaryText={
-                  decodeMode === "model_current"
-                    ? `runCount=${decodeSummary?.runCount ?? (model?.runCount ?? 0)}`
-                    : decodeSummary?.questionText
-                      ? decodeSummary.questionText
-                      : decodeMode === "llm_direct" && directSource === "current"
-                        ? question.trim() || "（当前输入为空）"
-                        : "—"
-                }
-              />
-
-              {decodeError ? (
-                <Alert color="gray" variant="light" radius="md" className="gua-alert">
-                  {decodeError}
-                </Alert>
-              ) : null}
-
-              <Paper radius="md" p="md" className="gua-panel">
-                <Group justify="space-between" align="center" wrap="wrap" gap="sm">
-                  <Text fw={600} fz="sm">
-                    解码输出
-                  </Text>
-                  <Group gap="xs" wrap="wrap" style={{ justifyContent: "flex-end", flex: "1 1 360px" }}>
-                    <Group gap="xs" wrap="wrap">
-                      <Button
-                        radius="xl"
-                        variant={decodeAuto ? "filled" : "default"}
-                        onClick={() => {
-                          if (decodeAuto) {
-                            setDecodeAuto(false);
-                            return;
-                          }
-                          setDecodeAuto(true);
-                          scrollDecodeToBottom();
-                        }}
-                      >
-                        {decodeAuto ? "滚屏开" : "滚屏关"}
-                      </Button>
-                      {decodeThinkingEnabled || decodeReasoning.trim() ? (
-                        <Button
-                          radius="xl"
-                          variant="default"
-                          onClick={() => {
-                            decodeReasoningManualRef.current = true;
-                            decodeAutoCollapseArmedRef.current = false;
-                            setDecodeReasoningOpen((v) => !v);
-                            if (!decodeReasoningOpen && decodeAuto) queueMicrotask(() => scrollReasonToBottom());
-                          }}
-                        >
-                          {decodeReasoningOpen ? "收起思考" : "查看思考"}
-                        </Button>
-                      ) : null}
-                    </Group>
-                    <Group gap="xs" wrap="wrap">
-                      <Button radius="xl" variant="default" onClick={onDecodeStop} disabled={!decodeStreaming}>
-                        停止
-                      </Button>
-                      <Button radius="xl" onClick={onDecodeStart} disabled={!decodePacket || decodeStreaming}>
-                        {decodeStreaming ? "解码中…" : "开始解码"}
-                      </Button>
-                    </Group>
-                  </Group>
-                </Group>
-                {decodeReasoningOpen && (decodeReasoningMarkdown || (decodeStreaming && decodeThinkingEnabled)) ? (
-                  <Box
-                    ref={decodeReasonRef}
-                    mt="sm"
-                    className="gua-stream-body gua-scroll-body gua-decode-reasoning"
-                    onScroll={(e) => {
-                      const node = e.currentTarget;
-                      if (decodeReasonProgrammatic.current) {
-                        decodeReasonProgrammatic.current = false;
-                        return;
-                      }
-                      if (decodeAuto && !isNearBottom(node, 48)) setDecodeAuto(false);
-                    }}
-                  >
-                    <MarkdownStream content={decodeReasoningMarkdown || (decodeStreaming && decodeThinkingEnabled ? "思考中…" : "")} className="gua-stream-body-inner" />
-                  </Box>
-                ) : null}
-                <Box
-                  ref={decodeOutRef}
-                  mt="sm"
-                  className="gua-stream-body gua-decode-body"
-                  onScroll={(e) => {
-                    const node = e.currentTarget;
-                    if (decodeOutProgrammatic.current) {
-                      decodeOutProgrammatic.current = false;
-                      return;
-                    }
-                    if (decodeAuto && !isNearBottom(node, 48)) setDecodeAuto(false);
-                  }}
-                >
-                  <MarkdownStream content={decodeAnswerMarkdown || (decodeStreaming ? "正在解码…" : "")} className="gua-stream-body-inner" />
-                </Box>
-              </Paper>
-            </Stack>
+            <DecodeTabContent
+              decodeMode={decodeMode}
+              setDecodeMode={setDecodeMode}
+              directSource={directSource}
+              setDirectSource={setDirectSource}
+              decodeHistoryPickId={decodeHistoryPickId}
+              setDecodeHistoryPickId={setDecodeHistoryPickId}
+              history={history}
+              onBack={() => setActiveTab(result && runPhase === "result" ? "result" : "input")}
+              summaryText={
+                decodeMode === "model_current"
+                  ? `runCount=${decodeSummary?.runCount ?? (model?.runCount ?? 0)}`
+                  : decodeSummary?.questionText
+                    ? decodeSummary.questionText
+                    : decodeMode === "llm_direct" && directSource === "current"
+                      ? question.trim() || "（当前输入为空）"
+                      : "—"
+              }
+              decodeError={decodeError}
+              decodeAuto={decodeAuto}
+              setDecodeAuto={setDecodeAuto}
+              decodeThinkingEnabled={decodeThinkingEnabled}
+              decodeReasoning={decodeReasoning}
+              decodeReasoningOpen={decodeReasoningOpen}
+              setDecodeReasoningOpen={setDecodeReasoningOpen}
+              decodeStreaming={decodeStreaming}
+              decodePacket={decodePacket}
+              onDecodeStart={onDecodeStart}
+              onDecodeStop={onDecodeStop}
+              decodeAnswerMarkdown={decodeAnswerMarkdown}
+              decodeReasoningMarkdown={decodeReasoningMarkdown}
+              decodeOutRef={decodeOutRef}
+              decodeReasonRef={decodeReasonRef}
+              decodeOutProgrammatic={decodeOutProgrammatic}
+              decodeReasonProgrammatic={decodeReasonProgrammatic}
+              decodeReasoningManualRef={decodeReasoningManualRef}
+              decodeAutoCollapseArmedRef={decodeAutoCollapseArmedRef}
+              isNearBottom={isNearBottom}
+              scrollDecodeToBottom={scrollDecodeToBottom}
+              scrollReasonToBottom={scrollReasonToBottom}
+            />
           ) : null}
 
         </Stack>
@@ -3047,685 +2240,87 @@ export default function CyberGuaApp() {
       </Modal>
 
       <Modal opened={aboutOpen} onClose={() => setAboutOpen(false)} size="lg" centered title="算法说明">
-        <MarkdownStream
-          content={[
-            "## 摘要",
-            "",
-            "本文描述一种面向“个人宇宙常量”的确定性推演流程。系统以问题、时间与本地观测构造种子，生成可解释的符号参数集，并据此合成表达式结构；推演阶段分层揭示参数与结构，归一阶段将其数值化求解，输出标量 $\\Omega$ 及其可复算的代入等式。推演次数越多，本机常量将缓慢收敛，形成专属法则。",
-            "",
-            "## 1. 输入、观测、模型与随机种子",
-            "",
-            "- 显式输入：问题文本 $x$、起卦时间 $t$、可选昵称 $n$。",
-            "- 本地观测：被动观测 $o$（设备/系统/网络/偏好）与交互扰动 $e$（微熵）。可选增强观测 $o^{+}$（需授权）。",
-            "- 本机模型：宇宙常量模型 $M$ 存于本地，用于调制推演与公式生成。",
-            "- 构造 32 位种子 $s = \\mathrm{mix}(t, x, n, o, o^{+}, e, M)$，其中 $\\mathrm{mix}$ 为可复算的整数散列混合。",
-            "- 种子驱动伪随机数发生器 $r(s)$，保证同条件可复现，并对微扰保持敏感。",
-            "",
-            "## 2. 参数化：不确定性的符号表示",
-            "",
-            "- 定义参数集 $\\Theta = \\{Q, T, N, \\epsilon, \\alpha, \\beta, \\gamma, \\Phi_1, \\dots, \\Phi_k\\}$。",
-            "- 参数值由 $r(s)$ 采样得到，允许闭式表达（分式、根式、常数与极限），并附带中文语义标签以保持可解释性。",
-            "",
-            "## 3. 结构生成：表达式树合成",
-            "",
-            "- 从参数节点与常数节点构造候选集合 $V$，通过随机合成规则生成表达式树 $f(\\cdot)$：",
-            "  - 二元算子：$+, -, \\cdot$",
-            "  - 分式：$\\frac{a}{b}$",
-            "  - 幂：$a^{b}$",
-            "  - 初等函数：$\\log, \\exp, \\sin, \\cos, \\tanh$",
-            "- 得到公式：$\\Omega = f(\\Theta)$。",
-            "",
-            "## 4. 推演阶段：分层揭示与过程记录",
-            "",
-            "- 传统块与现代块由同一事件序列驱动，分别提供叙述式与结构化视角。",
-            "- 设推演进度 $p\\in[0,1]$，参数揭示函数 $g(p)$ 决定在阶段 $p$ 已公开的参数子集，其余以 $\\square$ 占位。",
-            "",
-            "## 5. 归一阶段：数值化求解与可复算输出",
-            "",
-            "- 对参数闭式进行解析并数值化：$\\hat\\Theta = \\mathrm{eval}(\\Theta)$。",
-            "- 对表达式树执行递归求值，得到 $\\Omega = f(\\hat\\Theta)$。",
-            "- 最终以等式展示：将 $\\hat\\Theta$ 代入右侧表达式并给出“算式 = 结果”，保证同条件可复算。",
-          ].join("\n")}
-        />
+        <MarkdownStream content={ABOUT_ALGORITHM_MARKDOWN} />
       </Modal>
 
-      <Modal opened={settingsOpen} onClose={() => setSettingsOpen(false)} size="lg" centered title="设置">
-        <Stack gap="md">
-          <Paper radius="md" p="md" className="gua-panel">
-            <Group justify="space-between" align="center" wrap="nowrap">
-              <Group gap="xs" align="center" wrap="nowrap">
-                <Text fw={600} className="gua-section-title">
-                  个人宇宙常量 · 现状
-                </Text>
-                <ActionIcon
-                  variant="subtle"
-                  color="gray"
-                  radius="xl"
-                  aria-label="现状说明"
-                  onClick={() => {
-                    setSettingsHelpTopic("status");
-                    setSettingsHelpOpen(true);
-                  }}
-                >
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <path
-                      d="M12 17v-5.2c0-1.1.9-2 2-2h.2c.9 0 1.8-.7 1.8-1.6 0-1.1-1.1-2-2.4-2h-3.2C8.6 6.2 7 7.7 7 9.5"
-                      stroke="currentColor"
-                      strokeWidth="1.6"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                    <path d="M12 20.3a.8.8 0 1 0 0-1.6.8.8 0 0 0 0 1.6Z" fill="currentColor" />
-                    <path
-                      d="M12 22c5.5 0 10-4.5 10-10S17.5 2 12 2 2 6.5 2 12s4.5 10 10 10Z"
-                      stroke="currentColor"
-                      strokeWidth="1.6"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                </ActionIcon>
-              </Group>
-              <Badge variant="light" color="gray" radius="md" className="gua-chip">
-                {dashboard.runCount}
-              </Badge>
-            </Group>
-            <Stack gap="xs" mt="sm">
-              <Group justify="space-between" wrap="nowrap">
-                <Text fz="xs" c="dimmed">
-                  演化进度
-                </Text>
-                <Text fz="xs" c="dimmed">
-                  {Math.round(dashboard.progress01 * 100)}%
-                </Text>
-              </Group>
-              <Progress value={dashboard.progress01 * 100} />
-              <Group justify="space-between" wrap="nowrap">
-                <Text fz="xs" c="dimmed">
-                  满意比例
-                </Text>
-                <Text fz="xs" c="dimmed">
-                  {Math.round(dashboard.likesRatio01 * 100)}%
-                </Text>
-              </Group>
-              <Text fz="xs" c="dimmed">
-                签名：{dashboard.recentSignature ? String(dashboard.recentSignature).slice(0, 8) : "—"}
-              </Text>
-            </Stack>
-          </Paper>
+      <SettingsModals
+        opened={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        helpOpened={settingsHelpOpen}
+        onHelpClose={() => setSettingsHelpOpen(false)}
+        helpTitle={settingsHelpTitle}
+        helpMarkdown={settingsHelpMarkdown}
+        openHelpTopic={(topic) => {
+          setSettingsHelpTopic(topic);
+          setSettingsHelpOpen(true);
+        }}
+        dashboard={dashboard}
+        historyLength={history.length}
+        modelLibrary={modelLibrary}
+        model={model}
+        modelLibraryError={modelLibraryError}
+        onCreateNewModelSlot={onCreateNewModelSlot}
+        onCloneCurrentModelSlot={onCloneCurrentModelSlot}
+        onImportModelAsNewSlot={onImportModelAsNewSlot}
+        onSetActiveModelSlot={onSetActiveModelSlot}
+        onExportModelSlot={onExportModelSlot}
+        onDeleteModelSlot={onDeleteModelSlot}
+        onRenameModelSlot={onRenameModelSlot}
+        enhanced={enhanced}
+        requestEnhanced={requestEnhanced}
+      />
 
-          <Paper radius="md" p="md" className="gua-panel">
-            <Group justify="space-between" align="center" wrap="nowrap">
-              <Group gap="xs" align="center" wrap="nowrap">
-                <Text fw={600} className="gua-section-title">
-                  多维度评分
-                </Text>
-                <ActionIcon
-                  variant="subtle"
-                  color="gray"
-                  radius="xl"
-                  aria-label="评分说明"
-                  onClick={() => {
-                    setSettingsHelpTopic("score");
-                    setSettingsHelpOpen(true);
-                  }}
-                >
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <path
-                      d="M12 17v-5.2c0-1.1.9-2 2-2h.2c.9 0 1.8-.7 1.8-1.6 0-1.1-1.1-2-2.4-2h-3.2C8.6 6.2 7 7.7 7 9.5"
-                      stroke="currentColor"
-                      strokeWidth="1.6"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                    <path d="M12 20.3a.8.8 0 1 0 0-1.6.8.8 0 0 0 0 1.6Z" fill="currentColor" />
-                    <path
-                      d="M12 22c5.5 0 10-4.5 10-10S17.5 2 12 2 2 6.5 2 12s4.5 10 10 10Z"
-                      stroke="currentColor"
-                      strokeWidth="1.6"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                </ActionIcon>
-              </Group>
-              <Badge variant="light" color="gray" radius="md" className="gua-chip">
-                N={Math.min(20, history.length)}
-              </Badge>
-            </Group>
-            <Stack gap="xs" mt="sm">
-              <Text fz="sm">
-                Score：均值 {dashboard.scoreMean.toFixed(1)} · 波动 {dashboard.scoreStd.toFixed(1)}
-              </Text>
-              <Group justify="space-between" wrap="nowrap">
-                <Text fz="xs" c="dimmed">
-                  Ω 有限率
-                </Text>
-                <Text fz="xs" c="dimmed">
-                  {Math.round(dashboard.omegaFiniteRatio01 * 100)}%
-                </Text>
-              </Group>
-              <Progress value={dashboard.omegaFiniteRatio01 * 100} />
-              <Text fz="xs" c="dimmed">
-                反馈倾向：{dashboard.feedbackBias.toFixed(2)} · 满意 {dashboard.feedbackCounts.liked} · 不满意 {dashboard.feedbackCounts.disliked}
-              </Text>
-              <Text fz="xs" c="dimmed">
-                观测：{dashboard.enhancedStatus.enabled ? "增强开启" : "增强关闭"} · 地理 {dashboard.enhancedStatus.geo} · 方向 {dashboard.enhancedStatus.motion}
-              </Text>
-            </Stack>
-          </Paper>
+      <DivinationHistoryModals
+        opened={divinationHistoryOpen}
+        onClose={() => setDivinationHistoryOpen(false)}
+        items={history}
+        openDetail={(id) => setDivinationHistoryDetailId(id)}
+        detail={divinationHistoryDetail}
+        closeDetail={() => setDivinationHistoryDetailId(null)}
+        formatIsoMinute={formatIsoMinute}
+        onSetFeedback={setHistoryFeedback}
+        onDelete={(id) => {
+          deleteHistoryItem(id);
+          if (divinationHistoryDetailId === id) setDivinationHistoryDetailId(null);
+        }}
+        detailFormulaMarkdown={divinationHistoryDetailFormulaMarkdown}
+        detailTraceMarkdown={divinationHistoryDetailTraceMarkdown}
+        detailPacketJson={divinationHistoryDetailPacketJson}
+      />
 
-          <Paper radius="md" p="md" className="gua-panel">
-            <Group justify="space-between" align="center" wrap="nowrap">
-              <Group gap="xs" align="center" wrap="nowrap">
-                <Text fw={600} className="gua-section-title">
-                  模型维度（θ16）
-                </Text>
-                <ActionIcon
-                  variant="subtle"
-                  color="gray"
-                  radius="xl"
-                  aria-label="维度说明"
-                  onClick={() => {
-                    setSettingsHelpTopic("theta");
-                    setSettingsHelpOpen(true);
-                  }}
-                >
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <path
-                      d="M12 17v-5.2c0-1.1.9-2 2-2h.2c.9 0 1.8-.7 1.8-1.6 0-1.1-1.1-2-2.4-2h-3.2C8.6 6.2 7 7.7 7 9.5"
-                      stroke="currentColor"
-                      strokeWidth="1.6"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                    <path d="M12 20.3a.8.8 0 1 0 0-1.6.8.8 0 0 0 0 1.6Z" fill="currentColor" />
-                    <path
-                      d="M12 22c5.5 0 10-4.5 10-10S17.5 2 12 2 2 6.5 2 12s4.5 10 10 10Z"
-                      stroke="currentColor"
-                      strokeWidth="1.6"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                </ActionIcon>
-              </Group>
-              <Badge variant="light" color="gray" radius="md" className="gua-chip">
-                稳定度 {Math.round(dashboard.thetaStability01 * 100)}%
-              </Badge>
-            </Group>
-            <SimpleGrid cols={{ base: 8, sm: 16 }} spacing={6} mt="sm">
-              {dashboard.theta16.map((v, i) => (
-                <Box key={`theta-${i}`} style={{ height: 44, borderRadius: 10, background: "rgba(15,23,42,0.06)", display: "flex", alignItems: "flex-end", padding: 4 }}>
-                  <Box style={{ width: "100%", height: `${Math.max(2, Math.round(clamp01(v) * 100))}%`, borderRadius: 8, background: "rgba(15,23,42,0.75)" }} />
-                </Box>
-              ))}
-            </SimpleGrid>
-          </Paper>
+      <DecodeHistoryModals
+        opened={decodeHistoryOpen}
+        onClose={() => setDecodeHistoryOpen(false)}
+        items={decodeAiHistory}
+        openDetail={(id) => setDecodeHistoryDetailId(id)}
+        detail={decodeHistoryDetail}
+        closeDetail={() => setDecodeHistoryDetailId(null)}
+        formatIsoMinute={formatIsoMinute}
+        previewFromMarkdown={previewFromMarkdown}
+        decodeHistoryAnswerMarkdown={decodeHistoryAnswerMarkdown}
+        decodeHistoryReasoningMarkdown={decodeHistoryReasoningMarkdown}
+        decodeHistoryDetailContextJson={decodeHistoryDetailContextJson}
+      />
 
-          <UniverseModelLibraryPanel
-            library={modelLibrary}
-            activeModel={model}
-            error={modelLibraryError}
-            onCreateNew={onCreateNewModelSlot}
-            onCloneCurrent={onCloneCurrentModelSlot}
-            onImportAsNew={(f) => void onImportModelAsNewSlot(f)}
-            onSetActive={onSetActiveModelSlot}
-            onExportItem={onExportModelSlot}
-            onDeleteItem={onDeleteModelSlot}
-            onRenameItem={onRenameModelSlot}
-          />
-
-          <Paper radius="md" p="md" className="gua-panel">
-            <Group justify="space-between" align="center" wrap="nowrap">
-              <Text fw={600} className="gua-section-title">
-                增强观测
-              </Text>
-              <Switch checked={enhanced.enabled} onChange={(e) => requestEnhanced(e.currentTarget.checked)} />
-            </Group>
-            <Text mt="xs" fz="xs" c="dimmed">
-              地理：{enhanced.geo} · 方向：{enhanced.motion}
-            </Text>
-            <Text fz="xs" c="dimmed">
-              授权仅用于本地观测，不会上传。历史反馈会影响后续推演的参考权重。
-            </Text>
-          </Paper>
-        </Stack>
-      </Modal>
-
-      <Modal opened={settingsHelpOpen} onClose={() => setSettingsHelpOpen(false)} size="lg" centered title={settingsHelpTitle}>
-        <Paper radius="md" p="md" className="gua-panel">
-          <MarkdownStream content={settingsHelpMarkdown} />
-        </Paper>
-      </Modal>
-
-      <Modal opened={divinationHistoryOpen} onClose={() => setDivinationHistoryOpen(false)} size="lg" centered title="推演历史">
-        <Stack gap="md">
-          <Paper radius="md" p="md" className="gua-panel">
-            <Group justify="space-between" align="center" wrap="nowrap">
-              <Text fw={600} className="gua-section-title">
-                归一结果记录
-              </Text>
-              <Badge variant="light" color="gray" radius="md" className="gua-chip">
-                {history.length}
-              </Badge>
-            </Group>
-            <Text mt="xs" fz="xs" c="dimmed">
-              推演历史与反馈从设置移至此处展示。仅保存在本地。
-            </Text>
-          </Paper>
-
-          <Paper radius="md" p="md" className="gua-panel">
-            <Box mt="sm" style={{ maxHeight: 420, overflow: "auto", paddingRight: 6 }}>
-              {history.length === 0 ? (
-                <Text fz="sm" c="dimmed">
-                  暂无推演历史记录。
-                </Text>
-              ) : (
-                <Stack gap="xs">
-                  {history.map((item) => (
-                    <Paper
-                      key={item.id}
-                      radius="md"
-                      p="sm"
-                      className="gua-panel gua-panel-muted"
-                      style={{ cursor: "pointer" }}
-                      onClick={() => setDivinationHistoryDetailId(item.id)}
-                    >
-                      <Group justify="space-between" align="flex-start" wrap="nowrap">
-                        <Stack gap={2} style={{ minWidth: 0 }}>
-                          <Text fz="xs" c="dimmed">
-                                {formatIsoMinute(item.datetimeISO || item.createdAt)} {item.root ? `· ${String(item.root).slice(0, 8)}` : ""}
-                          </Text>
-                          <Text fw={600} fz="sm">
-                            {item.question || "（无输入）"}
-                          </Text>
-                          <Text fz="sm" c="dimmed" lineClamp={2}>
-                            {item.omega ? `Ω=${item.omega} · ` : ""}Score={item.score}
-                            {item.signature ? ` · ${item.signature.slice(0, 12)}` : ""}
-                          </Text>
-                        </Stack>
-                        <Group gap="xs" wrap="nowrap">
-                          <Button
-                            size="xs"
-                            radius="xl"
-                            variant={item.feedback === 1 ? "filled" : "default"}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setHistoryFeedback(item.id, 1);
-                            }}
-                          >
-                            满意
-                          </Button>
-                          <Button
-                            size="xs"
-                            radius="xl"
-                            variant={item.feedback === -1 ? "filled" : "default"}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setHistoryFeedback(item.id, -1);
-                            }}
-                          >
-                            不满意
-                          </Button>
-                          <Button
-                            size="xs"
-                            radius="xl"
-                            variant="default"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              deleteHistoryItem(item.id);
-                              if (divinationHistoryDetailId === item.id) setDivinationHistoryDetailId(null);
-                            }}
-                          >
-                            删除
-                          </Button>
-                        </Group>
-                      </Group>
-                    </Paper>
-                  ))}
-                </Stack>
-              )}
-            </Box>
-          </Paper>
-        </Stack>
-      </Modal>
-
-      <Modal opened={Boolean(divinationHistoryDetail)} onClose={() => setDivinationHistoryDetailId(null)} size="xl" centered title="推演详情">
-        {divinationHistoryDetail ? (
-          <Stack gap="md">
-            <Paper radius="md" p="md" className="gua-panel">
-              <Group justify="space-between" align="center" wrap="wrap" gap="sm">
-                <Stack gap={2} style={{ minWidth: 240, flex: "1 1 240px" }}>
-                  <Text fw={600} fz="sm">
-                    {divinationHistoryDetail.question || "（无输入）"}
-                  </Text>
-                  <Text fz="xs" c="dimmed" lineClamp={2}>
-                    {formatIsoMinute(divinationHistoryDetail.datetimeISO || divinationHistoryDetail.createdAt)}
-                    {divinationHistoryDetail.root ? ` · ${String(divinationHistoryDetail.root).slice(0, 8)}` : ""}
-                    {divinationHistoryDetail.signature ? ` · ${divinationHistoryDetail.signature.slice(0, 12)}` : ""}
-                  </Text>
-                </Stack>
-                <Group gap="xs" wrap="nowrap">
-                  <Button
-                    size="xs"
-                    radius="xl"
-                    variant={divinationHistoryDetail.feedback === 1 ? "filled" : "default"}
-                    onClick={() => setHistoryFeedback(divinationHistoryDetail.id, 1)}
-                  >
-                    满意
-                  </Button>
-                  <Button
-                    size="xs"
-                    radius="xl"
-                    variant={divinationHistoryDetail.feedback === -1 ? "filled" : "default"}
-                    onClick={() => setHistoryFeedback(divinationHistoryDetail.id, -1)}
-                  >
-                    不满意
-                  </Button>
-                  <Button
-                    size="xs"
-                    radius="xl"
-                    variant="default"
-                    onClick={() => {
-                      deleteHistoryItem(divinationHistoryDetail.id);
-                      setDivinationHistoryDetailId(null);
-                    }}
-                  >
-                    删除
-                  </Button>
-                </Group>
-              </Group>
-            </Paper>
-
-            <Paper radius="md" p="md" className="gua-panel">
-              <Group justify="space-between" align="center" wrap="nowrap">
-                <Text fw={600} fz="sm">
-                  归一公式
-                </Text>
-                <Group gap="xs" wrap="nowrap">
-                  <Badge variant="light" color="gray" radius="md" className="gua-chip">
-                    Score={divinationHistoryDetail.score}
-                  </Badge>
-                  <Badge variant="light" color="gray" radius="md" className="gua-chip">
-                    {divinationHistoryDetail.omega ? `Ω=${divinationHistoryDetail.omega}` : "Ω=—"}
-                  </Badge>
-                </Group>
-              </Group>
-              <Box mt="sm" className="gua-stream-body gua-decode-body">
-                <MarkdownStream content={divinationHistoryDetailFormulaMarkdown || "—"} className="gua-stream-body-inner" />
-              </Box>
-            </Paper>
-
-            {divinationHistoryDetailTraceMarkdown ? (
-              <Paper radius="md" p="md" className="gua-panel">
-                <Text fw={600} fz="sm">
-                  推演过程（现代块）
-                </Text>
-                <Box mt="sm" className="gua-stream-body gua-scroll-body">
-                  <MarkdownStream content={divinationHistoryDetailTraceMarkdown} className="gua-stream-body-inner" />
-                </Box>
-              </Paper>
-            ) : null}
-
-            <Paper radius="md" p="md" className="gua-panel">
-              <Text fw={600} fz="sm">
-                原始数据
-              </Text>
-              <Box mt="sm" style={{ maxHeight: 320, overflow: "auto", paddingRight: 6 }}>
-                <Text component="pre" fz="xs" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0 }}>
-                  {divinationHistoryDetailPacketJson || "—"}
-                </Text>
-              </Box>
-            </Paper>
-          </Stack>
-        ) : null}
-      </Modal>
-
-      <Modal opened={decodeHistoryOpen} onClose={() => setDecodeHistoryOpen(false)} size="lg" centered title="解码历史">
-        <Stack gap="md">
-          <Paper radius="md" p="md" className="gua-panel">
-            <Group justify="space-between" align="center" wrap="nowrap">
-              <Text fw={600} className="gua-section-title">
-                请求与响应
-              </Text>
-              <Badge variant="light" color="gray" radius="md" className="gua-chip">
-                {decodeAiHistory.length}
-              </Badge>
-            </Group>
-            <Text mt="xs" fz="xs" c="dimmed">
-              记录每次点击「开始解码」触发的 AI 解码请求与输出。仅保存在本地。
-            </Text>
-          </Paper>
-
-          <Paper radius="md" p="md" className="gua-panel">
-            <Box mt="sm" style={{ maxHeight: 420, overflow: "auto", paddingRight: 6 }}>
-              {decodeAiHistory.length === 0 ? (
-                <Text fz="sm" c="dimmed">
-                  暂无解码历史记录。
-                </Text>
-              ) : (
-                <Stack gap="xs">
-                  {decodeAiHistory.map((item) => {
-                    const modeLabel =
-                      item.mode === "result_current"
-                        ? "当前结果"
-                        : item.mode === "model_current"
-                          ? "模型"
-                          : item.mode === "result_history"
-                            ? "历史结果"
-                            : "直推演";
-                    const preview =
-                      previewFromMarkdown(item.response.answer) ||
-                      (item.response.error ? `错误：${item.response.error}` : item.response.aborted ? "已取消" : "—");
-                    return (
-                      <Paper
-                        key={item.id}
-                        radius="md"
-                        p="sm"
-                        className="gua-panel gua-panel-muted"
-                        style={{ cursor: "pointer" }}
-                        onClick={() => setDecodeHistoryDetailId(item.id)}
-                      >
-                        <Group justify="space-between" align="flex-start" wrap="nowrap">
-                          <Stack gap={2} style={{ minWidth: 0 }}>
-                            <Text fz="xs" c="dimmed">
-                              {formatIsoMinute(item.createdAt)} · {modeLabel}
-                              {item.options.model ? ` · ${item.options.model}` : ""}
-                            </Text>
-                            <Text fw={600} fz="sm">
-                              {item.summary.question || "（无输入）"}
-                            </Text>
-                            <Text fz="sm" c="dimmed" lineClamp={2}>
-                              {preview}
-                            </Text>
-                          </Stack>
-                          <Badge variant="light" color="gray" radius="md" className="gua-chip">
-                            {item.id.slice(0, 6)}
-                          </Badge>
-                        </Group>
-                      </Paper>
-                    );
-                  })}
-                </Stack>
-              )}
-            </Box>
-          </Paper>
-        </Stack>
-      </Modal>
-
-      <Modal opened={Boolean(decodeHistoryDetail)} onClose={() => setDecodeHistoryDetailId(null)} size="xl" centered title="解码详情">
-        {decodeHistoryDetail ? (
-          <Stack gap="md">
-            <Paper radius="md" p="md" className="gua-panel">
-              <Group justify="space-between" align="center" wrap="wrap" gap="sm">
-                <Stack gap={2} style={{ minWidth: 240, flex: "1 1 240px" }}>
-                  <Text fw={600} fz="sm">
-                    {decodeHistoryDetail.summary.question || "（无输入）"}
-                  </Text>
-                  <Text fz="xs" c="dimmed" lineClamp={2}>
-                    {formatIsoMinute(decodeHistoryDetail.createdAt)}
-                    {decodeHistoryDetail.options.model ? ` · ${decodeHistoryDetail.options.model}` : ""}
-                    {decodeHistoryDetail.response.durationMs ? ` · ${decodeHistoryDetail.response.durationMs}ms` : ""}
-                    {decodeHistoryDetail.response.aborted ? " · 已取消" : ""}
-                  </Text>
-                </Stack>
-                <Group gap="xs" wrap="nowrap">
-                  <Badge variant="light" color="gray" radius="md" className="gua-chip">
-                    Score={decodeHistoryDetail.summary.score}
-                  </Badge>
-                  <Badge variant="light" color="gray" radius="md" className="gua-chip">
-                    {decodeHistoryDetail.summary.omega ? `Ω=${decodeHistoryDetail.summary.omega}` : "Ω=—"}
-                  </Badge>
-                </Group>
-              </Group>
-            </Paper>
-
-            {decodeHistoryDetail.response.error ? (
-              <Alert color="gray" variant="light" radius="md" className="gua-alert">
-                {decodeHistoryDetail.response.error}
-              </Alert>
-            ) : null}
-
-            <Paper radius="md" p="md" className="gua-panel">
-              <Text fw={600} fz="sm">
-                AI 回答
-              </Text>
-              <Box mt="sm" className="gua-stream-body gua-decode-body">
-                <MarkdownStream content={decodeHistoryAnswerMarkdown || "—"} className="gua-stream-body-inner" />
-              </Box>
-            </Paper>
-
-            {decodeHistoryReasoningMarkdown ? (
-              <Paper radius="md" p="md" className="gua-panel">
-                <Text fw={600} fz="sm">
-                  思考过程
-                </Text>
-                <Box mt="sm" className="gua-stream-body gua-scroll-body gua-decode-reasoning">
-                  <MarkdownStream content={decodeHistoryReasoningMarkdown} className="gua-stream-body-inner" />
-                </Box>
-              </Paper>
-            ) : null}
-
-            <Paper radius="md" p="md" className="gua-panel">
-              <Group justify="space-between" align="center" wrap="nowrap">
-                <Text fw={600} fz="sm">
-                  请求上下文
-                </Text>
-                <Badge variant="light" color="gray" radius="md" className="gua-chip">
-                  {decodeHistoryDetail.context.k === "hid" ? `hid:${decodeHistoryDetail.context.hid.slice(0, 6)}` : "snapshot"}
-                </Badge>
-              </Group>
-              <Box mt="sm" style={{ maxHeight: 320, overflow: "auto", paddingRight: 6 }}>
-                <Text component="pre" fz="xs" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0 }}>
-                  {decodeHistoryDetailContextJson || "—"}
-                </Text>
-              </Box>
-            </Paper>
-          </Stack>
-        ) : null}
-      </Modal>
-
-      <Modal opened={shareCardOpen} onClose={onShareCardClose} size="lg" centered title="分享海报预览">
-        <Stack gap="md">
-          <Group justify="space-between" align="center" wrap="wrap">
-            <SegmentedControl
-              value={shareCardTemplate}
-              onChange={(v) => setShareCardTemplate(v as ShareCardTemplate)}
-              data={[
-                { value: "ai_direct", label: "AI 直推" },
-                { value: "divination_decode", label: "推演解码" },
-                { value: "model_snapshot", label: "模型快照" },
-              ]}
-            />
-            <Group gap="xs" wrap="wrap">
-              <Button radius="xl" variant="default" onClick={() => void generateShareCard()} disabled={shareCardBusy || !sharePosterQrDataUrl}>
-                {shareCardBusy ? "生成中…" : shareCardPreviewUrl ? "重新生成" : "生成海报"}
-              </Button>
-              <Button radius="xl" variant="default" onClick={onShareCardDownload} disabled={!shareCardBlob}>
-                下载 PNG
-              </Button>
-              <Button radius="xl" variant="default" onClick={() => void onShareCardCopy()} disabled={!shareCardCopySupported || !shareCardBlob}>
-                复制图片
-              </Button>
-            </Group>
-          </Group>
-
-          {shareCardError ? (
-            <Text fz="xs" c="dimmed">
-              {shareCardError}
-            </Text>
-          ) : null}
-          {shareCardBusy ? (
-            <Stack gap={6}>
-              <Text fz="xs" c="dimmed">
-                {shareCardBusyText || "生成中…"}
-              </Text>
-              <Progress value={shareCardBusyPct} animated />
-            </Stack>
-          ) : null}
-
-          <Box style={{ position: "fixed", left: -20000, top: 0, pointerEvents: "none" }}>
-            <Box
-              ref={sharePosterRef}
-              style={{
-                width: 1080,
-                height: 1350,
-                display: "inline-block",
-              }}
-            >
-              <SharePoster
-                template={shareCardProps.template}
-                modeLabel={shareCardProps.modeLabel}
-                localTimeText={shareCardProps.localTimeText}
-                utcTimeText={shareCardProps.utcTimeText}
-                qrDataUrl={sharePosterQrDataUrl || "data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs="}
-                qrUrlText={shareCardProps.qrUrlText}
-                headline={shareCardProps.headline}
-                question={shareCardProps.question}
-                conclusionQa={shareCardProps.conclusionQa}
-                conclusionInsight={shareCardProps.conclusionInsight}
-                score={shareCardProps.score}
-                omega={shareCardProps.omega}
-                signature={shareCardProps.signature}
-                rootDigest={shareCardProps.rootDigest}
-                formulaLatex={shareCardProps.formulaLatex}
-                runCount={shareCardProps.runCount}
-                likedRatio={shareCardProps.likedRatio}
-                recent={shareCardProps.recent}
-                model={(shareCardProps as unknown as { model?: UniverseModelV1 | null }).model}
-                theta16={(shareCardProps as unknown as { theta16?: number[] }).theta16}
-              />
-            </Box>
-          </Box>
-
-          <Box
-            style={{
-              borderRadius: 16,
-              border: "1px solid var(--line)",
-              background: "var(--surface-2)",
-              overflow: "auto",
-              maxHeight: "70vh",
-              padding: 14,
-            }}
-          >
-            {shareCardPreviewUrl ? (
-              <Box
-                component="img"
-                src={shareCardPreviewUrl}
-                alt="分享海报预览"
-                style={{ display: "block", width: "100%", height: "auto", borderRadius: 12 }}
-              />
-            ) : (
-              <Box p="md">
-                <Text fz="sm" c="dimmed">
-                  {shareCardBusy ? "生成中…" : "暂无预览：请选择类型后点击“生成海报”。"}
-                </Text>
-              </Box>
-            )}
-          </Box>
-        </Stack>
-      </Modal>
+      <ShareCardModal
+        opened={shareCard.opened}
+        onClose={shareCard.close}
+        template={shareCard.template}
+        setTemplate={shareCard.setTemplate}
+        busy={shareCard.busy}
+        busyText={shareCard.busyText}
+        busyPct={shareCard.busyPct}
+        error={shareCard.error}
+        previewUrl={shareCard.previewUrl}
+        blobPresent={Boolean(shareCard.blob)}
+        qrDataUrl={shareCard.qrDataUrl}
+        copySupported={shareCard.copySupported}
+        onGenerate={() => void shareCard.generate()}
+        onDownload={shareCard.download}
+        onCopy={() => void shareCard.copy()}
+        sharePosterRef={shareCard.sharePosterRef}
+        sharePosterProps={shareCard.sharePosterProps}
+      />
 
       <AiConfigModal
         opened={aiConfigOpen}
@@ -3749,182 +2344,4 @@ export default function CyberGuaApp() {
       />
     </Box>
   );
-}
-
-function buildFormulaMarkdown(
-  data: ReturnType<typeof buildFormulaData> | null,
-  traceVisible: number,
-  traceTotal: number,
-  phase: Phase,
-) {
-  if (!data) return ["", "", "$$", "\\square", "$$"].join("\n");
-  const stepIndex =
-    traceTotal > 0 ? Math.min(data.steps.length - 1, Math.floor((traceVisible / traceTotal) * data.steps.length)) : 0;
-  const rawLatex = phase === "computing" ? data.steps[Math.max(0, stepIndex)] ?? data.latex : data.latex;
-  const latex = phase === "computing" ? maskNumbers(rawLatex) : rawLatex;
-  return ["", "", "$$", latex, "$$"].join("\n");
-}
-
-function buildResultLatex(data: ReturnType<typeof buildFormulaData> | null) {
-  if (!data) return null;
-  const omega = data.params.find((p) => p.key === "Ω");
-  if (!omega?.value) return null;
-  const parts = data.latex.split("=");
-  const right = parts.slice(1).join("=").trim();
-  if (!right) return null;
-  let expr = right;
-  for (const param of data.params) {
-    if (!param.latex || !param.value) continue;
-    if (param.key === "Ω") continue;
-    const token = escapeRegExp(param.latex);
-    expr = expr.replace(new RegExp(token, "g"), `\\left(${param.value}\\right)`);
-  }
-  return `${expr} = ${omega.value}`;
-}
-
-function escapeRegExp(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function buildProgressiveParams(params: FormulaParam[], phase: Phase, traceVisible: number, traceTotal: number) {
-  if (params.length === 0) return [];
-  if (phase === "result") return params;
-  const base = params.filter((p) => p.key !== "Ω");
-  const ratio = traceTotal > 0 ? traceVisible / traceTotal : 0;
-  const revealCount = Math.max(0, Math.min(base.length, Math.floor(ratio * base.length)));
-  let revealed = 0;
-  return params.map((p) => {
-    if (p.key === "Ω") return { ...p, value: "\\square" };
-    if (revealed < revealCount) {
-      revealed += 1;
-      return p;
-    }
-    return { ...p, value: "\\square" };
-  });
-}
-
-function maskNumbers(latex: string) {
-  let index = 0;
-  return latex.replace(/\d+(\.\d+)?/g, () => {
-    index += 1;
-    return `c_{${index}}`;
-  });
-}
-
-function buildScienceMarkdown(events: DivinationTraceEvent[]) {
-  if (events.length === 0) {
-    return "## 现代块\n\n等待推演信号...";
-  }
-  const lines: string[] = ["", ""];
-  let currentPhase = "";
-  for (const evt of events) {
-    if (evt.phase !== currentPhase) {
-      currentPhase = evt.phase;
-      lines.push(`### ${currentPhase}`);
-    }
-    const data = evt.data ? formatEventData(evt.data) : "";
-    if (evt.kind === "group_start") {
-      lines.push(`- **${evt.message}**${data}`);
-    } else if (evt.kind === "event") {
-      lines.push(`- ${evt.message}${data}`);
-    }
-  }
-  return lines.join("\n");
-}
-
-function formatEventData(data: Record<string, string | number>) {
-  const keys = Object.keys(data);
-  if (keys.length === 0) return "";
-  const ordered = keys.sort((a, b) => a.localeCompare(b));
-  const payload = ordered.map((k) => `${k}=${String(data[k])}`).join(" · ");
-  return ` \`${payload}\``;
-}
-
-function buildLunarLines(date: Date) {
-  const lunar = Lunar.fromDate(date) as unknown as Record<string, unknown>;
-  const lines: string[] = ["", ""];
-  lines.push(...collectNoArgMethods(lunar, "Lunar"));
-  const solar = safeCall(lunar, "getSolar");
-  if (solar) {
-    lines.push("", "### Solar");
-    lines.push(...collectNoArgMethods(solar, "Solar"));
-  }
-  const lunarYear = safeCall(lunar, "getYear");
-  if (lunarYear) {
-    lines.push("", "### LunarYear");
-    lines.push(...collectNoArgMethods(lunarYear, "LunarYear"));
-  }
-  const lunarMonth = safeCall(lunar, "getMonth");
-  if (lunarMonth) {
-    lines.push("", "### LunarMonth");
-    lines.push(...collectNoArgMethods(lunarMonth, "LunarMonth"));
-  }
-  const lunarDay = safeCall(lunar, "getDay");
-  if (lunarDay) {
-    lines.push("", "### LunarDay");
-    lines.push(...collectNoArgMethods(lunarDay, "LunarDay"));
-  }
-  const lunarTime = safeCall(lunar, "getTime");
-  if (lunarTime) {
-    lines.push("", "### LunarTime");
-    lines.push(...collectNoArgMethods(lunarTime, "LunarTime"));
-  }
-  return lines;
-}
-
-function streamLines(lines: string[], traceVisible: number, traceTotal: number, phase: Phase) {
-  if (phase === "result") return lines.join("\n");
-  if (lines.length === 0) return "";
-  const ratio = traceTotal > 0 ? traceVisible / traceTotal : 0;
-  const count = Math.max(1, Math.floor(lines.length * ratio));
-  return lines.slice(0, count).join("\n");
-}
-
-function collectNoArgMethods(target: Record<string, unknown>, title: string) {
-  const lines: string[] = [];
-  const proto = Object.getPrototypeOf(target);
-  const keys = new Set<string>([
-    ...Object.keys(target),
-    ...(proto ? Object.getOwnPropertyNames(proto) : []),
-  ]);
-  lines.push(`### ${title}`);
-  for (const key of Array.from(keys).sort((a, b) => a.localeCompare(b))) {
-    if (key === "constructor") continue;
-    if (key.startsWith("_")) continue;
-    const value = (target as Record<string, unknown>)[key];
-    if (typeof value !== "function") continue;
-    if (value.length > 0) continue;
-    const out = safeCall(target, key);
-    if (out === undefined || out === null) continue;
-    const rendered = formatValue(out);
-    if (!rendered) continue;
-    lines.push(`- **${key}**: ${rendered}`);
-  }
-  return lines;
-}
-
-function safeCall(target: Record<string, unknown>, key: string) {
-  const fn = target[key];
-  if (typeof fn !== "function") return null;
-  try {
-    return fn.call(target);
-  } catch {
-    return null;
-  }
-}
-
-function formatValue(value: unknown) {
-  if (typeof value === "string") return `\`${value}\``;
-  if (typeof value === "number" || typeof value === "boolean") return `\`${String(value)}\``;
-  if (value instanceof Date) return `\`${value.toISOString()}\``;
-  if (typeof value === "object" && value) {
-    try {
-      const json = JSON.stringify(value);
-      if (!json) return "";
-      return `\`${json.length > 160 ? `${json.slice(0, 160)}…` : json}\``;
-    } catch {
-      return `\`${String(value)}\``;
-    }
-  }
-  return "";
 }

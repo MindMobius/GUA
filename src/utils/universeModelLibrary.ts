@@ -46,7 +46,11 @@ export function loadUniverseModelLibrary(): UniverseModelLibraryV1 | null {
 }
 
 export function saveUniverseModelLibrary(next: UniverseModelLibraryV1) {
-  localStorage.setItem(MODEL_LIBRARY_KEY, JSON.stringify(next));
+  try {
+    localStorage.setItem(MODEL_LIBRARY_KEY, JSON.stringify(next));
+  } catch {
+    void 0;
+  }
 }
 
 export function ensureUniverseModelLibrary(args: {
@@ -101,4 +105,3 @@ export function deleteUniverseModelItem(lib: UniverseModelLibraryV1, id: string)
   const activeId = lib.activeId === id ? nextItems[0]!.id : lib.activeId;
   return { ...lib, activeId, items: nextItems };
 }
-

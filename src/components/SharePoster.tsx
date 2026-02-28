@@ -1,6 +1,7 @@
 "use client";
 
 import { forwardRef, useEffect, useRef } from "react";
+import Image from "next/image";
 import { InlineMath, BlockMath } from "react-katex";
 import type { UniverseModelV1 } from "@/types/universeModel";
 import { UniverseModelBoard } from "@/components/UniverseModelBoard";
@@ -80,7 +81,7 @@ export const SharePoster = forwardRef<HTMLDivElement, SharePosterProps>(function
       <div className={styles.topBand} />
 
       <div className={styles.qrWrap}>
-        <img className={styles.qrImg} src={props.qrDataUrl} alt="" />
+        <Image className={styles.qrImg} src={props.qrDataUrl} alt="" width={182} height={182} unoptimized />
       </div>
       <div className={`${styles.mono} ${styles.qrUrlTop}`}>{props.qrUrlText}</div>
       <div className={styles.qrBar} />
